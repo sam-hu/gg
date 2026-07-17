@@ -1,0 +1,4 @@
+interface:
+  display_name: 'gg Stacked Branches'
+  short_description: 'Manage GitHub branch stacks with the gg CLI'
+  default_prompt: 'Use $gg-stacked-branches to create and manage this work as a stack of dependent branches.'

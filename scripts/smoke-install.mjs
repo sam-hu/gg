@@ -51,6 +51,18 @@ try {
   if (!reinstall.stdout.includes('Installed gg at')) {
     throw new Error('make install did not replace the existing installation');
   }
+  for (const relative of [
+    '.agents/skills/gg-stacked-branches/SKILL.md',
+    '.claude/skills/gg-stacked-branches/SKILL.md',
+  ]) {
+    const installedSkill = path.join(isolatedHome, relative);
+    if (!existsSync(installedSkill)) {
+      throw new Error(`make install did not create agent skill: ${installedSkill}`);
+    }
+    if (!readFileSync(installedSkill, 'utf8').includes('name: gg-stacked-branches')) {
+      throw new Error(`installed agent skill was unexpected: ${installedSkill}`);
+    }
+  }
   const executable = path.join(isolatedHome, '.local', 'bin', 'gg');
   if (!existsSync(executable)) throw new Error('make install did not create gg');
   const help = run(executable, ['--help'], { cwd: root, env });
@@ -101,6 +113,27 @@ try {
     throw new Error('partially initialized make install left a share directory behind');
   }
 
+  const skillConflictHome = path.join(root, 'skill-conflict-home');
+  const conflictingSkill = path.join(
+    skillConflictHome,
+    '.agents',
+    'skills',
+    'gg-stacked-branches',
+    'SKILL.md',
+  );
+  mkdirSync(path.dirname(conflictingSkill), { recursive: true });
+  writeFileSync(conflictingSkill, 'user-owned\n');
+  expectFailure('make', ['install'], {
+    cwd: project,
+    env: { ...process.env, GG_INSTALL_HOME: skillConflictHome, HOME: skillConflictHome },
+  });
+  if (readFileSync(conflictingSkill, 'utf8') !== 'user-owned\n') {
+    throw new Error('make install changed a conflicting agent skill');
+  }
+  if (readdirSync(skillConflictHome).some((name) => name !== '.agents')) {
+    throw new Error('failed skill installation left unrelated traces behind');
+  }
+
   const foreignHome = path.join(root, 'foreign-home');
   const foreignPath = path.join(foreignHome, '.local', 'share', '.gg-build-user-owned');
   mkdirSync(path.dirname(foreignPath), { recursive: true });
@@ -140,7 +173,9 @@ try {
   if (readdirSync(recoveryHome).length > 0) {
     throw new Error('make uninstall did not recover interrupted directory cleanup');
   }
-  process.stdout.write('Isolated make install, gg --help, and trace-free uninstall succeeded.\n');
+  process.stdout.write(
+    'Isolated make install, agent skill copies, gg --help, and trace-free uninstall succeeded.\n',
+  );
 } finally {
   cleanup();
 }
