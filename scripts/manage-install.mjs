@@ -39,7 +39,10 @@ const action = process.argv[2];
 let lockHeld = false;
 let buildRoot;
 let stagingPrefix;
+let backupPrefix;
+let executableBackup;
 let finalCreated = false;
+let executableCreated = false;
 let installComplete = false;
 let createdDirectories = [];
 let recoveredDirectories = [];
@@ -68,29 +71,29 @@ function install() {
   acquireLock();
   cleanupOwnedTransients();
 
-  if (pathEntry(executable)) {
-    if (!isOwnedExecutableLink()) {
-      throw new Error(`Refusing to replace existing executable: ${executable}`);
-    }
-    if (!existsSync(prefix)) unlinkSync(executable);
+  const existingExecutable = pathEntry(executable);
+  if (existingExecutable?.isDirectory()) {
+    throw new Error(`Refusing to replace directory at executable path: ${executable}`);
+  }
+  if (
+    existingExecutable &&
+    !existingExecutable.isFile() &&
+    !existingExecutable.isSymbolicLink()
+  ) {
+    throw new Error(`Refusing to replace unsupported executable path: ${executable}`);
   }
 
+  let previousManifest;
   if (existsSync(prefix)) {
-    readAndValidateManifest(prefix);
-    if (!isOwnedExecutableLink()) {
-      throw new Error(
-        `The gg installation exists but ${executable} is missing or no longer owned by it.`,
-      );
-    }
-    verifyExecutable(executable);
-    process.stdout.write(`gg is already installed at ${executable}.\n`);
-    process.stdout.write('Run `make uninstall` before reinstalling updated source.\n');
-    installComplete = true;
-    releaseLock();
-    return;
+    previousManifest = readAndValidateManifest(prefix);
+    createdDirectories = mergeDirectories(
+      validateCreatedDirectories(previousManifest.createdDirectories),
+      createdDirectories,
+    );
+    persistLockDirectories();
   }
 
-  process.stdout.write('Building gg in an isolated temporary directory...\n');
+  process.stdout.write('Installing...\n');
   buildRoot = createOwnedTransient('.gg-build-');
   const source = path.join(buildRoot, 'source');
   copyProject(source);
@@ -161,12 +164,33 @@ function install() {
     executable,
     createdDirectories,
   });
+
+  if (previousManifest) {
+    backupPrefix = path.join(shareDirectory, `.gg-backup-${eventId}`);
+    if (pathEntry(backupPrefix)) {
+      throw new Error(`Refusing to replace unexpected backup path: ${backupPrefix}`);
+    }
+    renameSync(prefix, backupPrefix);
+  }
+  if (pathEntry(executable) && !isOwnedExecutableLink()) {
+    executableBackup = path.join(buildRoot, 'previous-executable');
+    renameSync(executable, executableBackup);
+  }
   renameSync(stagingPrefix, prefix);
   stagingPrefix = undefined;
   finalCreated = true;
   unlinkSync(path.join(prefix, TRANSIENT_MARKER));
-  symlinkSync(installedExecutable, executable);
+  if (!isOwnedExecutableLink()) {
+    symlinkSync(installedExecutable, executable);
+    executableCreated = true;
+  }
   verifyExecutable(executable);
+
+  if (backupPrefix) {
+    removeOwnedFinal(backupPrefix);
+    backupPrefix = undefined;
+  }
+  executableBackup = undefined;
 
   installComplete = true;
   finalCreated = false;
@@ -186,7 +210,7 @@ function uninstall() {
     if (link && isOwnedExecutableLink()) unlinkSync(executable);
     else if (link) process.stderr.write(`Preserved unrelated executable: ${executable}\n`);
     if (shareEntry) process.stderr.write(`Preserved unrelated path: ${shareDirectory}\n`);
-    process.stdout.write('gg is not installed; no installation traces remain.\n');
+    process.stdout.write('gg is not installed.\n');
     return;
   }
 
@@ -210,7 +234,7 @@ function uninstall() {
   releaseLock();
   verifyUninstalled();
   installComplete = true;
-  process.stdout.write('Uninstalled gg; no installation traces remain.\n');
+  process.stdout.write('Uninstalled gg.\n');
 }
 
 function requireSupportedNode() {
@@ -295,6 +319,15 @@ function persistLockDirectories() {
 
 function cleanupOwnedTransients() {
   for (const name of readdirSync(shareDirectory)) {
+    if (name.startsWith('.gg-backup-')) {
+      const target = path.join(shareDirectory, name);
+      if (!isOwnedFinal(target)) {
+        process.stderr.write(`Preserved unrelated gg-like path: ${target}\n`);
+        continue;
+      }
+      removeOwnedFinal(target);
+      continue;
+    }
     if (!name.startsWith('.gg-build-') && !name.startsWith('.gg-install-')) continue;
     const target = path.join(shareDirectory, name);
     if (!isOwnedTransient(target)) {
@@ -392,9 +425,16 @@ function verifyUninstalled() {
   if (existsSync(lockPath)) throw new Error(`Install lock still exists: ${lockPath}`);
   if (pathEntry(shareDirectory)?.isDirectory()) {
     for (const name of readdirSync(shareDirectory)) {
-      if (name.startsWith('.gg-build-') || name.startsWith('.gg-install-')) {
+      if (
+        name.startsWith('.gg-build-') ||
+        name.startsWith('.gg-install-') ||
+        name.startsWith('.gg-backup-')
+      ) {
         const target = path.join(shareDirectory, name);
-        if (isOwnedTransient(target)) {
+        if (
+          (name.startsWith('.gg-backup-') && isOwnedFinal(target)) ||
+          isOwnedTransient(target)
+        ) {
           throw new Error(`Temporary install directory still exists: ${target}`);
         }
       }
@@ -412,16 +452,19 @@ function isOwnedTransient(directory) {
   }
 }
 
+function isOwnedFinal(directory) {
+  try {
+    readAndValidateManifest(directory);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function cleanupAfterFailure() {
   let ownedCleanupComplete = true;
   try {
     if (stagingPrefix) removeOwnedTransient(stagingPrefix);
-  } catch {
-    ownedCleanupComplete = false;
-    // Best-effort cleanup must continue through every owned path.
-  }
-  try {
-    if (buildRoot) removeOwnedTransient(buildRoot);
   } catch {
     ownedCleanupComplete = false;
     // Best-effort cleanup must continue through every owned path.
@@ -433,7 +476,35 @@ function cleanupAfterFailure() {
     // Best-effort cleanup must continue through every owned path.
   }
   try {
-    if (finalCreated && isOwnedExecutableLink()) unlinkSync(executable);
+    if (backupPrefix && existsSync(backupPrefix) && !existsSync(prefix)) {
+      renameSync(backupPrefix, prefix);
+      backupPrefix = undefined;
+    }
+  } catch {
+    ownedCleanupComplete = false;
+    // Best-effort cleanup must continue through every owned path.
+  }
+  try {
+    if (executableCreated && isOwnedExecutableLink()) unlinkSync(executable);
+  } catch {
+    ownedCleanupComplete = false;
+    // Best-effort cleanup must continue through every owned path.
+  }
+  try {
+    if (executableBackup && existsSync(executableBackup) && !pathEntry(executable)) {
+      renameSync(executableBackup, executable);
+      executableBackup = undefined;
+    }
+  } catch {
+    ownedCleanupComplete = false;
+    // Best-effort cleanup must continue through every owned path.
+  }
+  try {
+    if (buildRoot && (!executableBackup || !existsSync(executableBackup))) {
+      removeOwnedTransient(buildRoot);
+    } else if (executableBackup && existsSync(executableBackup)) {
+      ownedCleanupComplete = false;
+    }
   } catch {
     ownedCleanupComplete = false;
     // Best-effort cleanup must continue through every owned path.

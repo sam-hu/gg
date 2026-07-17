@@ -53,7 +53,7 @@ export function git(repo: string, ...args: string[]): CommandResult {
 }
 
 export function gg(repo: string, args: string[], env: NodeJS.ProcessEnv = {}): CommandResult {
-  return command(process.execPath, [cli, ...args, '--cwd', repo, '--no-interactive'], {
+  return command(process.execPath, [cli, '--cwd', repo, '--no-interactive', ...args], {
     cwd: repo,
     env,
   });

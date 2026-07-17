@@ -38,6 +38,15 @@ export interface GitResult {
   stderr: string;
 }
 
+export function runGitPassthrough(cwd: string, args: string[], debug = false): number {
+  if (debug) {
+    process.stderr.write(`[debug] git ${args.map(redactArgument).join(' ')}\n`);
+  }
+  const result = spawnSync('git', args, { cwd, stdio: 'inherit' });
+  if (result.error) throw new UserError(result.error.message);
+  return result.status ?? 1;
+}
+
 export class Git {
   readonly root: string;
   readonly gitDir: string;

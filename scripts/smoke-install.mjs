@@ -47,7 +47,10 @@ try {
   };
 
   run('make', ['install'], { cwd: project, env });
-  run('make', ['install'], { cwd: project, env });
+  const reinstall = run('make', ['install'], { cwd: project, env });
+  if (!reinstall.stdout.includes('Installed gg at')) {
+    throw new Error('make install did not replace the existing installation');
+  }
   const executable = path.join(isolatedHome, '.local', 'bin', 'gg');
   if (!existsSync(executable)) throw new Error('make install did not create gg');
   const help = run(executable, ['--help'], { cwd: root, env });
@@ -67,12 +70,20 @@ try {
   mkdirSync(path.dirname(conflictExecutable), { recursive: true });
   writeFileSync(conflictExecutable, 'user-owned\n');
   const conflictEnv = { ...process.env, GG_INSTALL_HOME: conflictHome, HOME: conflictHome };
-  expectFailure('make', ['install'], { cwd: project, env: conflictEnv });
-  if (readFileSync(conflictExecutable, 'utf8') !== 'user-owned\n') {
-    throw new Error('make install changed an unrelated gg executable');
+  run('make', ['install'], { cwd: project, env: conflictEnv });
+  const replacementHelp = run(conflictExecutable, ['--help'], {
+    cwd: root,
+    env: conflictEnv,
+  });
+  if (!replacementHelp.stdout.includes('stacked-branch CLI')) {
+    throw new Error('make install did not replace an existing gg executable');
+  }
+  run('make', ['uninstall'], { cwd: project, env: conflictEnv });
+  if (existsSync(conflictExecutable)) {
+    throw new Error('make uninstall left the replacement gg executable behind');
   }
   if (existsSync(path.join(conflictHome, '.local', 'share'))) {
-    throw new Error('failed make install left installer-created directories behind');
+    throw new Error('make uninstall left replacement package traces behind');
   }
 
   const blockedHome = path.join(root, 'blocked-home');

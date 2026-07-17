@@ -284,6 +284,34 @@ describe('core stacked-branch workflow', () => {
     });
   });
 
+  test('renders sibling branches as parallel colored lanes', async () => {
+    await withTempRoot('log-siblings', (root) => {
+      const repo = initRepo(root);
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      expectSuccess(gg(repo, ['bc', 'sibling-one']));
+      expectSuccess(git(repo, 'switch', '-q', 'main'));
+      expectSuccess(gg(repo, ['bc', 'sibling-two']));
+
+      const log = gg(repo, ['l']);
+      expectSuccess(log);
+      const lines = log.stdout.split('\n');
+      const first = lines.indexOf('◯ sibling-one');
+      const second = lines.indexOf('│  ◉ sibling-two (current)');
+      const join = lines.indexOf('├──┘');
+      const trunk = lines.indexOf('◯ main');
+      expect(first).toBeGreaterThanOrEqual(0);
+      expect(second).toBeGreaterThan(first);
+      expect(join).toBeGreaterThan(second);
+      expect(trunk).toBeGreaterThan(join);
+      expect(log.stdout.match(/ - initial/g)).toHaveLength(1);
+
+      const colored = gg(repo, ['l'], { FORCE_COLOR: '1' });
+      expectSuccess(colored);
+      expect(colored.stdout).toContain('\u001b[36m');
+      expect(colored.stdout).toContain('\u001b[34m');
+    });
+  });
+
   test('shares metadata across linked worktrees and blocks overlapping mutations', async () => {
     await withTempRoot('linked-worktree', (root) => {
       const repo = initRepo(root);

@@ -32,7 +32,7 @@ Uninstall with one command:
 make uninstall
 ```
 
-`make install` builds from the lockfile in an isolated temporary directory, installs the self-contained package under `~/.local/share/gg`, and creates `~/.local/bin/gg`. It refuses to overwrite an unrelated executable. `make uninstall` removes the executable, package, installer metadata, locks, temporary build directories, dedicated npm cache/logs, and any now-empty directories that the installer created. It is safe and idempotent; it does not touch project dependencies created separately with `npm ci`. Repository stack metadata and your existing Git/GitHub credentials are user data, not installation traces, so uninstall never removes them.
+`make install` builds the current checkout from the lockfile in an isolated temporary directory and force-replaces the package under `~/.local/share/gg` and any existing file or symlink at `~/.local/bin/gg`, so local development updates are installed on every run. It will not replace a directory at that executable path or an unrecognized installation directory. `make uninstall` removes the executable, package, installer metadata, locks, temporary build directories, dedicated npm cache/logs, and any now-empty directories that the installer created. It is safe and idempotent; it does not touch project dependencies created separately with `npm ci`. Repository stack metadata and your existing Git/GitHub credentials are user data, not installation traces, so uninstall never removes them.
 
 ## First stack
 

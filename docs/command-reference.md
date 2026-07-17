@@ -2,6 +2,8 @@
 
 Every command accepts `--cwd`, `--debug`, `--interactive`/`--no-interactive`, `--verify`/`--no-verify`, and `-q`/`--quiet`. `--debug` prints redacted Git command traces to stderr. Failures return exit code 1.
 
+Unrecognized top-level commands pass through to Git, including their arguments, output, and exit code. For example, `gg add .` runs `git add .`, and `gg status --short` runs `git status --short`. Put gg global options before a passthrough command (for example, `gg --cwd ../repo status`); options after its name belong to Git and are forwarded verbatim.
+
 ## Initialize
 
 ```text
@@ -60,7 +62,16 @@ The default restacks the current branch's full connected stack segment. A confli
 gg move [-o|--onto <parent>] [-s|--source <branch>] [--only] [-a|--all]
 ```
 
-Without `--onto`, an interactive parent selector excludes the source and its descendants. `--only` reparents and restacks former child subtrees first, then moves the source, matching the measured 1.8.6 behavior. `--all` affects interactive selection only; because `gg` configures one active trunk, it currently adds no candidates.
+Without `--onto`, an interactive parent selector excludes the source and its descendants. The choices retain the tracked tree topology: independent stacks use parallel colored lanes, while branches in the same stack share a lane. Type a branch-name prefix to select it, use the arrow keys, or press Escape to cancel. `--only` reparents and restacks former child subtrees first, then moves the source, matching the measured 1.8.6 behavior. `--all` affects interactive selection only; because `gg` configures one active trunk, it currently adds no candidates.
+
+## Checkout
+
+```text
+gg checkout [branch]
+gg co [branch]
+```
+
+Without a branch, `co` opens the same topology-aware colored selector as `move`, including the current branch. An explicit local branch is checked out immediately; if it is not tracked by gg, the checkout still succeeds and gg reports that tracking state.
 
 ## Log
 
@@ -73,7 +84,7 @@ gg ll
 
 Flags: `--classic`, `-r/--reverse`, `-s/--stack`, `-n/--steps`, `-u/--show-untracked`, `-a/--all`.
 
-`ls` and `ll` accept the same flags as the full command. `--classic` uses Graphite's compact indentation form and ignores the other layout flags. Long mode is a decorated Git commit graph across all local branches and, like `gt log long`, ignores layout flags. The normal short/default view includes submitted or changed-since-submit state when recorded. `--all` is equivalent to the default while only one trunk is configured.
+`ls` and `ll` accept the same flags as the full command. `--classic` uses the compact indentation form and ignores the other layout flags. Long mode is a decorated Git commit graph across all local branches and ignores layout flags. The default view uses colored topology lanes so sibling branches visibly fork and rejoin. When stdin and stdout are attached to a terminal, log output opens in a full-screen ANSI-aware pager; press `q` to exit. Pipes and non-TTY callers receive plain, non-blocking output. The normal short/default view includes submitted or changed-since-submit state when recorded. `--all` is equivalent to the default while only one trunk is configured.
 
 ## Sync
 

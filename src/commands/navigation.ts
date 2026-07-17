@@ -2,6 +2,39 @@ import { select } from '@inquirer/prompts';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
+import { buildMoveTreeChoices } from '../move-tree.js';
+import { selectWithEscape } from '../prompts.js';
+
+export async function checkoutBranch(context: RepositoryContext, branch?: string): Promise<void> {
+  await context.ensureInitialized();
+  const graph = new StackGraph(context.git, context.store);
+  let target = branch;
+  if (!target) {
+    context.requireInteractive();
+    const candidates = graph
+      .trackedBranches()
+      .filter((candidate) => context.git.branchExists(candidate));
+    target = await selectWithEscape({
+      message: 'Checkout a branch (type to search, arrow keys, or Esc to cancel)',
+      choices: buildMoveTreeChoices(graph, candidates),
+      default: context.git.tryBranch(),
+      pageSize: 12,
+    });
+    if (!target) {
+      context.output.line('Checkout cancelled.');
+      return;
+    }
+  }
+
+  if (!context.git.branchExists(target)) throw ggError(`Could not find branch ${target}.`);
+  if (graph.get(target)) {
+    checkoutWithHint(context, graph, target, false);
+    return;
+  }
+  context.git.switch(target);
+  context.output.line(`Checked out ${target}.`);
+  context.output.line('This branch is not tracked by gg.');
+}
 
 export async function navigateUp(
   context: RepositoryContext,

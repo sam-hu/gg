@@ -1,9 +1,16 @@
 #!/usr/bin/env node
+import path from 'node:path';
 import { Command } from 'commander';
 import { createBranch, type BranchCreateOptions } from './commands/branch.js';
 import { amendCommit, createCommit, type CommitOptions } from './commands/commit.js';
 import { showLog, type LogOptions } from './commands/log.js';
-import { navigateBottom, navigateDown, navigateTop, navigateUp } from './commands/navigation.js';
+import {
+  checkoutBranch,
+  navigateBottom,
+  navigateDown,
+  navigateTop,
+  navigateUp,
+} from './commands/navigation.js';
 import {
   abortOperation,
   continueOperation,
@@ -21,6 +28,7 @@ import {
   type InitOptions,
 } from './context.js';
 import { UserError } from './errors.js';
+import { runGitPassthrough } from './git.js';
 
 const program = new Command();
 program
@@ -87,6 +95,14 @@ program
   .alias('b')
   .description('check out the bottom branch of the current stack')
   .action(async () => withContext(navigateBottom));
+
+program
+  .command('checkout [branch]')
+  .alias('co')
+  .description('check out a branch, selecting interactively when omitted')
+  .action(async (branchName: string | undefined) =>
+    withContext((context) => checkoutBranch(context, branchName)),
+  );
 
 program
   .command('restack')
@@ -258,12 +274,7 @@ function globalOptionsFromArgv(): GlobalOptions {
     const argument = args[index]!;
     if (argument === '--cwd' && args[index + 1]) options.cwd = args[++index]!;
     else if (argument.startsWith('--cwd=')) options.cwd = argument.slice('--cwd='.length);
-    else if (argument === '--debug') options.debug = true;
-    else if (argument === '--interactive') options.interactive = true;
-    else if (argument === '--no-interactive') options.interactive = false;
-    else if (argument === '--verify') options.verify = true;
-    else if (argument === '--no-verify') options.verify = false;
-    else if (argument === '--quiet' || argument === '-q') options.quiet = true;
+    else applyBooleanGlobalOption(options, argument);
   }
   return options;
 }
@@ -276,8 +287,67 @@ function increaseVerbosity(_value: string, previous: number): number {
   return previous + 1;
 }
 
-try {
+interface GitPassthroughInvocation {
+  args: string[];
+  options: GlobalOptions;
+}
+
+function gitPassthroughInvocation(args: string[]): GitPassthroughInvocation | undefined {
+  const forwarded: string[] = [];
+  const options: GlobalOptions = {};
+  let commandName: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (!commandName) {
+      if (argument === '--cwd' && args[index + 1]) {
+        options.cwd = args[++index]!;
+        continue;
+      }
+      if (argument.startsWith('--cwd=')) {
+        options.cwd = argument.slice('--cwd='.length);
+        continue;
+      }
+      if (applyBooleanGlobalOption(options, argument)) continue;
+    }
+
+    forwarded.push(argument);
+    if (!commandName && argument !== '--' && !argument.startsWith('-')) commandName = argument;
+  }
+
+  if (!commandName || commandName === 'help') return undefined;
+  const isGgCommand = program.commands.some(
+    (command) => command.name() === commandName || command.aliases().includes(commandName),
+  );
+  return isGgCommand ? undefined : { args: forwarded, options };
+}
+
+function applyBooleanGlobalOption(options: GlobalOptions, argument: string): boolean {
+  if (argument === '--debug') options.debug = true;
+  else if (argument === '--interactive') options.interactive = true;
+  else if (argument === '--no-interactive') options.interactive = false;
+  else if (argument === '--verify') options.verify = true;
+  else if (argument === '--no-verify') options.verify = false;
+  else if (argument === '--quiet' || argument === '-q') options.quiet = true;
+  else return false;
+  return true;
+}
+
+async function main(): Promise<void> {
+  const passthrough = gitPassthroughInvocation(process.argv.slice(2));
+  if (passthrough) {
+    process.exitCode = runGitPassthrough(
+      path.resolve(passthrough.options.cwd ?? process.cwd()),
+      passthrough.args,
+      passthrough.options.debug ?? false,
+    );
+    return;
+  }
   await program.parseAsync(process.argv);
+}
+
+try {
+  await main();
 } catch (error) {
   if (error instanceof UserError) {
     if (error.message)
