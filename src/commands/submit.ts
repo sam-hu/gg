@@ -377,18 +377,6 @@ async function pushBranch(
     return true;
   }
 
-  let approvedLease = options.force ?? false;
-  if (!approvedLease && context.interactive) {
-    approvedLease = await confirm({
-      message: `Remote branch ${item.branch} must be rewritten with force-with-lease. Continue?`,
-      default: false,
-    });
-  }
-  if (!approvedLease) {
-    throw ggError(
-      `Submitting ${item.branch} requires rewriting its remote branch. Rerun with --force or confirm interactively.`,
-    );
-  }
   git.run(['push', `--force-with-lease=${remoteRef}:${remoteHead}`, repository.remote, refspec]);
   return true;
 }

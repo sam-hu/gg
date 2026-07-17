@@ -36,7 +36,7 @@ The legacy branch/commit groups still execute in `gt 1.8.6`, but Graphite hides 
 | Log             | all stacks, current marker, restack/submission state, classic/short/long modes, untracked branches                                    | Lane art and age layout are readable approximations                                                       |
 | Sync            | fetch, safe trunk FF/divergence, all-stack restack, PR-state cleanup, warn-and-skip conflicts                                         | Graphite backend replaced by GitHub; `--all` currently operates on the active trunk only                  |
 | Submit          | downstack/stack scope, fork bases/heads, draft/publish, idempotent update, reviewers, comments, rerequest, auto-merge, dry run, lease | Plan lines are original; `--view`/`--web` print instructions instead of launching Graphite/GitHub UI      |
-| Force push      | never raw force; exact remote OID is checked                                                                                          | Safer than gt: a non-fast-forward requires `--force` or an interactive confirmation                       |
+| Force push      | automatic pinned force-with-lease; never raw force; exact remote OID is checked                                                       | A concurrent remote update safely rejects the lease                                                       |
 
 ## Sanctioned omissions
 

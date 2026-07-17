@@ -55,10 +55,6 @@ export async function showLog(
     lines.push(chalk.yellow("WARNING: The following branch has diverged from gg's tracking:"));
     for (const branch of validation.diverged) lines.push(chalk.yellow(`  ${branch}`));
   }
-  if (validation.missing.length > 0) {
-    lines.push(chalk.yellow('WARNING: The following tracked branches no longer exist locally:'));
-    for (const branch of validation.missing) lines.push(chalk.yellow(`  ${branch}`));
-  }
 
   if (style !== 'long' && !options.classic && options.showUntracked) {
     const tracked = new Set(graph.trackedBranches());

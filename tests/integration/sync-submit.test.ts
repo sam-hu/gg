@@ -229,6 +229,29 @@ describe('GitHub submission through an offline fake gh', () => {
     });
   });
 
+  test('automatically rewrites a diverged remote branch with a pinned lease', async () => {
+    await withTempRoot('submit-rewrite', (root) => {
+      const repo = initRepo(root);
+      const bare = createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'feature.txt', 'first\n');
+      expectSuccess(gg(repo, ['bc', 'feature', '--all', '-m', 'Feature']));
+      const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 1 });
+      expectSuccess(gg(repo, ['submit'], env));
+      const originalRemoteHead = head(bare, 'refs/heads/feature');
+
+      write(repo, 'feature.txt', 'rewritten\n');
+      expectSuccess(gg(repo, ['ca', '--all', '-m', 'Feature rewritten']));
+      const rewrittenHead = head(repo, 'feature');
+      expect(rewrittenHead).not.toBe(originalRemoteHead);
+
+      expectSuccess(gg(repo, ['submit'], env));
+      expect(head(bare, 'refs/heads/feature')).toBe(rewrittenHead);
+      expect(stateFrom(env).prs).toHaveLength(1);
+    });
+  });
+
   test('refreshes every affected stack comment after upstack additions and moves', async () => {
     await withTempRoot('submit-stack-comments', (root) => {
       const repo = initRepo(root);
@@ -284,7 +307,7 @@ describe('GitHub submission through an offline fake gh', () => {
       ).toContain('- **[#4 Update C](https://github.com/owner/repo/pull/4)**');
 
       expectSuccess(gg(repo, ['move', '--source', 'b', '--onto', 'x']));
-      expectSuccess(gg(repo, ['submit', '--branch', 'b', '--stack', '--force'], env));
+      expectSuccess(gg(repo, ['submit', '--branch', 'b', '--stack'], env));
 
       const afterMove = stateFrom(env);
       expect(afterMove.comments).toHaveLength(4);
