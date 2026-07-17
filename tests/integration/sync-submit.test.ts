@@ -154,6 +154,8 @@ describe('GitHub submission through an offline fake gh', () => {
       const bStackComment = afterFirst.comments.find(
         (comment: any) => comment.pullRequestNumber === 102,
       ).body;
+      expect(aStackComment).toContain('### This pull request is part of the following stack');
+      expect(aStackComment).not.toContain('### Stack');
       expect(aStackComment).toContain(
         '- [#102 B title](https://github.com/owner/repo/pull/102)\n- **[#101 A title](https://github.com/owner/repo/pull/101)** 👈 (This PR)\n- main',
       );
