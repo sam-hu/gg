@@ -157,11 +157,45 @@ function renderDefaultBranch(
     return;
   }
   const age = context.git.capture(['show', '-s', '--format=%cr', branch]);
-  const subject = context.git.capture(['show', '-s', '--format=%s', branch]);
+  const commits = commitsForBranch(context, graph, branch, revision);
   lines.push(`${chalk.white(`${prefix}│ `)}${chalk.gray(age)}`);
   lines.push(chalk.white(`${prefix}│ `));
-  lines.push(`${chalk.white(`${prefix}│ `)}${chalk.gray(`${revision.slice(0, 7)} - ${subject}`)}`);
+  for (const commit of commits) {
+    lines.push(
+      `${chalk.white(`${prefix}│ `)}${chalk.gray(`${commit.revision.slice(0, 7)} - ${commit.subject}`)}`,
+    );
+  }
   lines.push(chalk.white(`${prefix}│`));
+}
+
+function commitsForBranch(
+  context: RepositoryContext,
+  graph: StackGraph,
+  branch: string,
+  revision: string,
+): { revision: string; subject: string }[] {
+  const parent = graph.parent(branch);
+  if (!parent) {
+    const subject = context.git.capture(['show', '-s', '--format=%s', branch]);
+    return [{ revision, subject }];
+  }
+
+  const output = context.git.capture([
+    'log',
+    '--format=%H%x00%s',
+    `refs/heads/${parent}..refs/heads/${branch}`,
+    '--',
+  ]);
+  return output
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf('\0');
+      return {
+        revision: line.slice(0, separator),
+        subject: line.slice(separator + 1),
+      };
+    });
 }
 
 function renderLong(context: RepositoryContext, lines: string[]): void {

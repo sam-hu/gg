@@ -92,7 +92,7 @@ gg ll
 
 Flags: `--classic`, `-r/--reverse`, `-s/--stack`, `-n/--steps`, `-u/--show-untracked`, `-a/--all`.
 
-`ls` and `ll` accept the same flags as the full command. `--classic` uses the compact indentation form and ignores the other layout flags. Long mode is a decorated Git commit graph across all local branches and ignores layout flags. The default view uses colored topology lanes so sibling branches visibly fork and rejoin. When stdin and stdout are attached to a terminal, log output opens in a full-screen ANSI-aware pager; press `q` to exit. Pipes and non-TTY callers receive plain, non-blocking output. The normal short/default view includes submitted or changed-since-submit state when recorded. `--all` is equivalent to the default while only one trunk is configured.
+`ls` and `ll` accept the same flags as the full command. `--classic` uses the compact indentation form and ignores the other layout flags. Long mode is a decorated Git commit graph across all local branches and ignores layout flags. The default view uses colored topology lanes so sibling branches visibly fork and rejoin, and lists every commit belonging to each non-trunk branch in newest-first order. When stdin and stdout are attached to a terminal, log output opens in a full-screen ANSI-aware pager; press `q` to exit. Pipes and non-TTY callers receive plain, non-blocking output. The normal short/default view includes submitted or changed-since-submit state when recorded. `--all` is equivalent to the default while only one trunk is configured.
 
 ## Sync
 
@@ -127,3 +127,5 @@ Default scope is the current branch plus downstack ancestors. `--stack` includes
 New non-interactive PRs default to draft. Each PR targets its immediate parent; the bottom branch targets trunk or `--target-trunk`. Fork workflows use the trunk's fetch remote for the base repository and Git's branch `pushRemote`/`remote.pushDefault`/branch remote precedence plus `pushurl` for the head repository.
 
 PR descriptions are left available for human-authored content. Stack metadata is maintained in a dedicated PR comment containing a linked list of every open PR in that connected stack; the current PR is bolded. Each successful submission updates these comments in place across all tracked stacks, so upstack additions and moves are reflected on every affected PR.
+
+An ordinary submit whose selected branches are unchanged from their last fully successful submission is a no-op and prints a single status line. Explicit actions such as `--publish`, reviewer or comment options, editing, `--always`, and browser viewing still run.

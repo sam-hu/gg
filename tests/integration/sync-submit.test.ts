@@ -134,13 +134,11 @@ describe('GitHub submission through an offline fake gh', () => {
       expectSuccess(gg(repo, ['bottom']));
 
       const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 101 });
-      const first = gg(repo, ['submit', '--stack'], env);
+      const first = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
       expectSuccess(first);
       expect(first.stdout).toContain('https://github.com/owner/repo/pull/101');
-      const highlighted = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
-      expectSuccess(highlighted);
-      expect(highlighted.stdout).toContain('\u001b[34m');
-      expect(highlighted.stdout).toContain('\u001b[4m');
+      expect(first.stdout).toContain('\u001b[34m');
+      expect(first.stdout).toContain('\u001b[4m');
       const afterFirst = stateFrom(env);
       expect(afterFirst.prs).toHaveLength(2);
       expect(afterFirst.prs.map((pr: any) => [pr.head.ref, pr.base.ref])).toEqual([
@@ -156,12 +154,17 @@ describe('GitHub submission through an offline fake gh', () => {
       const bStackComment = afterFirst.comments.find(
         (comment: any) => comment.pullRequestNumber === 102,
       ).body;
-      expect(aStackComment).toContain('- main\n- **[#101 A title]');
+      expect(aStackComment).toContain(
+        '- [#102 B title](https://github.com/owner/repo/pull/102)\n- **[#101 A title](https://github.com/owner/repo/pull/101)** 👈 (This PR)\n- main',
+      );
       expect(aStackComment).toContain(
         '- **[#101 A title](https://github.com/owner/repo/pull/101)** 👈 (This PR)',
       );
       expect(aStackComment).toContain('- [#102 B title](https://github.com/owner/repo/pull/102)');
       expect(aStackComment).not.toContain("The bolded pull request is the one you're viewing.");
+      expect(aStackComment).toContain(
+        '<sub>This stack was generated using [gg](https://github.com/sam-hu/gg)</sub>',
+      );
       expect(bStackComment).toContain('- [#101 A title](https://github.com/owner/repo/pull/101)');
       expect(bStackComment).toContain(
         '- **[#102 B title](https://github.com/owner/repo/pull/102)** 👈 (This PR)',
@@ -170,8 +173,10 @@ describe('GitHub submission through an offline fake gh', () => {
 
       const second = gg(repo, ['submit', '--stack'], env);
       expectSuccess(second);
+      expect(second.stdout).toBe('Stack is unchanged since the last submit.\n');
       expect(stateFrom(env).prs).toHaveLength(2);
       expect(stateFrom(env).comments).toHaveLength(2);
+      expect(stateFrom(env).calls).toHaveLength(afterFirst.calls.length);
 
       const changed = stateFrom(env);
       changed.prs[0].body = 'Stacked branch: `a`\n\nBase: `main`\n\nHuman-authored notes.';
@@ -179,7 +184,7 @@ describe('GitHub submission through an offline fake gh', () => {
       changed.prs[1].base.ref = 'main';
       const statePath = env.GG_FAKE_GH_STATE!;
       writeFileSync(statePath, JSON.stringify(changed, null, 2));
-      expectSuccess(gg(repo, ['submit', '--stack'], env));
+      expectSuccess(gg(repo, ['submit', '--stack', '--always'], env));
       expect(stateFrom(env).prs[1].base.ref).toBe('a');
       expect(stateFrom(env).prs.map((pr: any) => pr.body)).toEqual(['Human-authored notes.', '']);
 
