@@ -53,6 +53,7 @@ describe('merge', () => {
       expect(plainOutput).not.toContain('Local stack updated');
       expect(result.stdout).toContain('\u001b[32m✔\u001b[39m');
       expect(result.stdout).toContain('\u001b[36ma\u001b[39m');
+      expect(result.stdout).not.toContain('\u001b[4ma\u001b[24m');
       expect(head(repo, 'main')).toBe(mergeSha);
       expect(head(bare, 'main')).toBe(mergeSha);
       expect(git(repo, 'branch', '--show-current').stdout.trim()).toBe('main');
