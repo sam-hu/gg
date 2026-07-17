@@ -314,6 +314,28 @@ describe('core stacked-branch workflow', () => {
     });
   });
 
+  test('renders every commit belonging to the top branch', async () => {
+    await withTempRoot('log-multi-commit', (root) => {
+      const repo = initRepo(root);
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'feature.txt', 'first\n');
+      expectSuccess(gg(repo, ['bc', 'feature', '--all', '-m', 'first feature commit']));
+      write(repo, 'feature.txt', 'second\n');
+      expectSuccess(gg(repo, ['cc', '--all', '-m', 'second feature commit']));
+
+      const log = gg(repo, ['l']);
+      expectSuccess(log);
+      const second = log.stdout.indexOf(' - second feature commit');
+      const first = log.stdout.indexOf(' - first feature commit');
+      const trunk = log.stdout.indexOf('◯ main');
+      expect(second).toBeGreaterThanOrEqual(0);
+      expect(first).toBeGreaterThan(second);
+      expect(trunk).toBeGreaterThan(first);
+      expect(log.stdout.match(/ - first feature commit/g)).toHaveLength(1);
+      expect(log.stdout.match(/ - second feature commit/g)).toHaveLength(1);
+    });
+  });
+
   test('shares metadata across linked worktrees and blocks overlapping mutations', async () => {
     await withTempRoot('linked-worktree', (root) => {
       const repo = initRepo(root);

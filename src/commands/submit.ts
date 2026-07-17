@@ -2,6 +2,7 @@ import { confirm, editor, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
+import type { Git } from '../git.js';
 import { StackGraph } from '../graph.js';
 import {
   authenticatedGitHubClient,
@@ -70,6 +71,12 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
       options.comment === true)
   ) {
     context.requireInteractive();
+  }
+
+  const initialBranches = submitScope(graph, anchor, options.stack ?? false);
+  if (canSkipUnchangedSubmit(git, graph, initialBranches, options)) {
+    output.line('Stack is unchanged since the last submit.');
+    return;
   }
 
   if (options.dryRun) {
@@ -168,6 +175,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   const urls: string[] = [];
   const pullRequestsByBranch = new Map<string, PullRequest>();
   let pushedAnyBranch = false;
+  let stackCommentsRefreshed = false;
   let submissionError: unknown;
   try {
     for (const item of plan) {
@@ -188,11 +196,6 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
       );
       if (submissionComment) await client.comment(repository, pullRequest, submissionComment);
       if (options.mergeWhenReady) await client.enableAutoMerge(repository, pullRequest);
-      const row = store.get(item.branch);
-      if (row) {
-        row.lastSubmittedVersion = item.localHead;
-        store.put(row);
-      }
       pullRequestsByBranch.set(item.branch, pullRequest);
       urls.push(pullRequest.url);
       output.line(chalk.blue.underline(pullRequest.url));
@@ -204,9 +207,19 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   if (!submissionError || pushedAnyBranch) {
     try {
       await refreshStackComments(client, repository, graph, pullRequestsByBranch);
+      stackCommentsRefreshed = true;
     } catch (error) {
       if (!submissionError) throw error;
       output.warning('Could not refresh stack comments after the partial submission.');
+    }
+  }
+  if (stackCommentsRefreshed) {
+    for (const item of plan) {
+      if (!pullRequestsByBranch.has(item.branch)) continue;
+      const row = store.get(item.branch);
+      if (!row) continue;
+      row.lastSubmittedVersion = item.localHead;
+      store.put(row);
     }
   }
   if (submissionError) throw submissionError;
@@ -215,6 +228,49 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   if (options.view || options.web) {
     output.line('Open the pull request URLs above in your browser.');
   }
+}
+
+function canSkipUnchangedSubmit(
+  git: Git,
+  graph: StackGraph,
+  branches: string[],
+  options: SubmitOptions,
+): boolean {
+  if (
+    options.dryRun ||
+    options.restack ||
+    options.publish ||
+    options.edit === true ||
+    options.editTitle === true ||
+    options.editDescription === true ||
+    options.reviewers ||
+    options.teamReviewers ||
+    options.always ||
+    options.mergeWhenReady ||
+    options.rerequestReview ||
+    options.view ||
+    options.comment ||
+    options.cli ||
+    options.web ||
+    options.targetTrunk
+  ) {
+    return false;
+  }
+  return branches.every((branch) => {
+    const row = graph.get(branch);
+    const head = git.tryHead(branch);
+    const parent = row?.parentBranchName;
+    return Boolean(
+      row?.lastSubmittedVersion &&
+      head === row.lastSubmittedVersion &&
+      parent &&
+      row.parentBranchRevision &&
+      git.tryHead(parent) &&
+      git.tryHead(row.parentBranchRevision) &&
+      git.isAncestor(row.parentBranchRevision, branch) &&
+      !graph.needsRestack(branch),
+    );
+  });
 }
 
 async function refreshStackComments(
@@ -266,14 +322,14 @@ function formatStackComment(
   currentBranch: string,
 ): string {
   const rows = [
-    `- ${trunk}`,
-    ...stack.map(({ branch, pullRequest }) => {
+    ...stack.toReversed().map(({ branch, pullRequest }) => {
       const title = escapeMarkdownLinkText(pullRequest.title.replace(/\s+/g, ' ').trim());
       const link = `[#${pullRequest.number} ${title}](${pullRequest.url})`;
       return `- ${branch === currentBranch ? `**${link}** 👈 (This PR)` : link}`;
     }),
+    `- ${trunk}`,
   ];
-  return `${STACK_COMMENT_MARKER}\n### Stack\n\nThis pull request is part of the following stack:\n\n${rows.join('\n')}`;
+  return `${STACK_COMMENT_MARKER}\n### Stack\n\nThis pull request is part of the following stack:\n\n${rows.join('\n')}\n\n<sub>This stack was generated using [gg](https://github.com/sam-hu/gg)</sub>`;
 }
 
 function escapeMarkdownLinkText(value: string): string {

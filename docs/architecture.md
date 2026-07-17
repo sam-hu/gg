@@ -70,12 +70,14 @@ Submission performs all read-only validation first: repository, authentication, 
 2. push normally when possible;
 3. require explicit authorization for a non-fast-forward update and use a pinned `--force-with-lease`;
 4. create or update the branch's PR;
-5. record the submitted commit only after the PR operation succeeds;
-6. discover open PRs across every tracked branch and create or update one managed stack comment on each PR.
+5. discover open PRs across every tracked branch and create or update one managed stack comment on each PR;
+6. record the submitted commit only after the PR operations and stack-comment refresh succeed.
 
 A later failure can leave already-completed lower branches submitted. The output makes this visible, and rerunning is idempotent because PRs are selected by exact head branch and existing open PRs are updated rather than duplicated.
 
 Stack comments are rebuilt by connected root stack after every successful submission. Each comment links every open PR in bottom-to-top graph order and bolds the PR on which the comment appears. A hidden marker lets `gg` update a stale comment in place or recreate a missing one, so any stack-member push self-heals the connected stack. Adding an upstack branch or moving branches between roots refreshes both the old and new stack without accumulating bot comments. If a later operation fails after at least one push succeeds, `gg` still attempts the repair before reporting the original submission error. Legacy `Stacked branch`/`Base` metadata is removed from PR descriptions on the next ordinary description update while any following human-authored description is preserved.
+
+Before GitHub authentication, an ordinary submit compares every selected local head with its last submitted version and verifies that the stored parent revision is still current. If all match, it exits with one unchanged-status line and performs no remote or metadata operations. Options that request an explicit GitHub or presentation action bypass this fast path.
 
 ## Trace-free local installation
 
