@@ -3,6 +3,7 @@ import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
 import { RestackEngine } from '../restack.js';
+import { stageChanges, stageRequestedChanges, STAGING_CHOICES } from '../staging.js';
 
 export interface CommitOptions {
   message?: string[];
@@ -90,16 +91,10 @@ async function stageForCommit(
   options: CommitOptions,
 ): Promise<void> {
   const { git } = context;
-  if (options.all) git.run(['add', '-A']);
-  else if (options.update) git.run(['add', '-u']);
-  else if (options.patch) {
-    git.run(['add', '--patch'], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
-  }
+  stageRequestedChanges(git, options);
   if (git.hasStagedChanges() || !git.hasAnyChanges() || !context.interactive) return;
   const choices = [
-    { name: 'Commit all file changes (--all)', value: 'all' },
-    { name: 'Commit all changes to tracked files (--update)', value: 'update' },
-    { name: 'Select changes to commit (--patch)', value: 'patch' },
+    ...STAGING_CHOICES,
     mode === 'amend'
       ? { name: 'Just edit the commit message', value: 'message' }
       : { name: 'Abort this operation', value: 'abort' },
@@ -109,10 +104,8 @@ async function stageForCommit(
     message: 'You have no staged changes. What would you like to do?',
     choices,
   });
-  if (action === 'all') git.run(['add', '-A']);
-  else if (action === 'update') git.run(['add', '-u']);
-  else if (action === 'patch') {
-    git.run(['add', '--patch'], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
+  if (action === 'all' || action === 'update' || action === 'patch') {
+    stageChanges(git, action);
   } else if (action === 'abort') {
     throw ggError('Aborted commit operation.');
   }

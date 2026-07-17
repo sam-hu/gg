@@ -20,7 +20,17 @@ describe('core stacked-branch workflow', () => {
       expect(existsSync(path.join(gitDir, '.gg_local_pr_info'))).toBe(true);
       const db = new DatabaseSync(path.join(gitDir, '.gg_metadata.db'));
       const migrations = db.prepare('SELECT name FROM kysely_migration ORDER BY rowid').all();
-      expect(migrations).toHaveLength(3);
+      expect(migrations).toEqual([
+        { name: '20260211_initial_schema' },
+        { name: '20260212_add_validation_columns' },
+        { name: '20260220_add_parent_head_revision' },
+        { name: '20260717_normalize_graph_topology' },
+      ]);
+      expect(
+        (db.prepare('PRAGMA table_info("branch_metadata")').all() as Array<{ name: string }>).map(
+          ({ name }) => name,
+        ),
+      ).not.toContain('children');
       expect(db.prepare('SELECT branch_name FROM branch_metadata').get()).toEqual({
         branch_name: 'main',
       });
@@ -47,10 +57,80 @@ describe('core stacked-branch workflow', () => {
       expectSuccess(gg(repo, ['bc', 'child']));
       expectSuccess(gg(repo, ['init', '--reset']));
       const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
-      expect(db.prepare('SELECT branch_name, children FROM branch_metadata').all()).toEqual([
-        { branch_name: 'develop', children: '[]' },
+      expect(db.prepare('SELECT branch_name FROM branch_metadata').all()).toEqual([
+        { branch_name: 'develop' },
       ]);
       db.close();
+    });
+  });
+
+  test('executes pending schema migrations against an existing metadata database', async () => {
+    await withTempRoot('migrate-metadata', (root) => {
+      const repo = initRepo(root);
+      const dbPath = path.join(repo, '.git', '.gg_metadata.db');
+      const legacy = new DatabaseSync(dbPath);
+      legacy.exec(`
+        CREATE TABLE branch_metadata (
+          branch_name text not null primary key,
+          parent_branch_name text,
+          parent_branch_revision text,
+          last_submitted_version text,
+          state text,
+          children text
+        );
+        CREATE TABLE kysely_migration (
+          name varchar(255) not null primary key,
+          timestamp varchar(255) not null
+        );
+        INSERT INTO kysely_migration VALUES ('20260211_initial_schema', '2026-02-11');
+        INSERT INTO branch_metadata VALUES ('main', null, null, null, null, '["later","feature"]');
+        INSERT INTO branch_metadata VALUES ('feature', 'main', null, null, null, '[]');
+        INSERT INTO branch_metadata VALUES ('later', 'main', null, null, null, '[]');
+      `);
+      legacy.close();
+
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+
+      const migrated = new DatabaseSync(dbPath);
+      expect(
+        (
+          migrated.prepare('PRAGMA table_info("branch_metadata")').all() as Array<{ name: string }>
+        ).map(({ name }) => name),
+      ).toEqual([
+        'branch_name',
+        'parent_branch_name',
+        'parent_branch_revision',
+        'last_submitted_version',
+        'state',
+        'sibling_order',
+        'branch_revision',
+        'validation_result',
+        'parent_head_revision',
+      ]);
+      expect(migrated.prepare('SELECT name FROM kysely_migration ORDER BY rowid').all()).toEqual([
+        { name: '20260211_initial_schema' },
+        { name: '20260212_add_validation_columns' },
+        { name: '20260220_add_parent_head_revision' },
+        { name: '20260717_normalize_graph_topology' },
+      ]);
+      expect(
+        migrated
+          .prepare('SELECT branch_name, parent_branch_name FROM branch_metadata ORDER BY rowid')
+          .all(),
+      ).toEqual([
+        { branch_name: 'main', parent_branch_name: null },
+        { branch_name: 'feature', parent_branch_name: 'main' },
+        { branch_name: 'later', parent_branch_name: 'main' },
+      ]);
+      expect(
+        migrated
+          .prepare(
+            `SELECT branch_name FROM branch_metadata
+             WHERE parent_branch_name = 'main' ORDER BY sibling_order`,
+          )
+          .all(),
+      ).toEqual([{ branch_name: 'later' }, { branch_name: 'feature' }]);
+      migrated.close();
     });
   });
 

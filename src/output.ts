@@ -18,10 +18,8 @@ export class Output {
     }
   }
 
-  raw(message: string): void {
-    if (!this.quiet) {
-      process.stdout.write(message);
-    }
+  lines(messages: Iterable<string>): void {
+    for (const message of messages) this.line(message);
   }
 
   page(message: string): void {
@@ -50,9 +48,5 @@ export class Output {
     if (!this.quiet) {
       process.stdout.write(`${chalk.yellow(`WARNING: ${message}`)}\n`);
     }
-  }
-
-  error(message: string): void {
-    process.stderr.write(message.endsWith('\n') ? message : `${message}\n`);
   }
 }

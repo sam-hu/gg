@@ -115,7 +115,7 @@ async function navigateDownFromSnapshot(
   }
   if (hops.length === 0) throw ggError('Already at the bottom most branch in the stack.');
   context.output.line(current);
-  for (const hop of hops) context.output.line(`⮑  ${hop}`);
+  context.output.lines(hops.map((hop) => `⮑  ${hop}`));
   checkoutWithHint(context, graph, cursor, false);
 }
 

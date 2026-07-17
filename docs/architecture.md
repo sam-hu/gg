@@ -27,10 +27,10 @@ TypeScript keeps the ref/metadata/recovery state shapes explicit in a command th
 ## Modules
 
 - `src/git.ts` is the only Git subprocess boundary. Arguments are arrays; shell interpolation is never used.
-- `src/metadata.ts` creates and updates gg's SQLite schema and JSON configuration files.
-- `src/graph.ts` validates and traverses the tracked branch graph.
+- `src/metadata.ts` runs versioned SQLite migrations and updates metadata and JSON configuration files.
+- `src/graph.ts` derives child indexes from canonical parent pointers, then validates and traverses the tracked branch graph.
 - `src/restack.ts` previews commits with `merge-tree`, recreates clean commits with `commit-tree`, and manages conflict recovery.
-- `src/github.ts` resolves GitHub remotes and implements authenticated `gh` and token transports.
+- `src/github.ts` resolves GitHub remotes and implements one operation layer over authenticated `gh` and token transports.
 - `src/commands/*` contains presentation and command orchestration.
 
 ## Worktree-less restacking

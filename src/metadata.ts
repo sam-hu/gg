@@ -18,7 +18,7 @@ export interface BranchMetadata {
   parentBranchRevision: string | null;
   lastSubmittedVersion: string | null;
   state: string | null;
-  children: string[];
+  siblingOrder: number;
   branchRevision: string | null;
   validationResult: ValidationResult;
   parentHeadRevision: string | null;
@@ -30,11 +30,57 @@ interface DatabaseRow {
   parent_branch_revision: string | null;
   last_submitted_version: string | null;
   state: string | null;
-  children: string | null;
+  sibling_order: number;
   branch_revision: string | null;
   validation_result: ValidationResult;
   parent_head_revision: string | null;
 }
+
+interface SchemaMigration {
+  name: string;
+  up: (db: DatabaseSync) => void;
+}
+
+const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
+  // Historical steps stay executable so a fresh database and an upgraded one
+  // reach the same schema through the same ordered path.
+  {
+    name: '20260211_initial_schema',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS "branch_metadata" (
+          "branch_name" text not null primary key,
+          "parent_branch_name" text,
+          "parent_branch_revision" text,
+          "last_submitted_version" text,
+          "state" text,
+          "children" text
+        );
+        CREATE INDEX IF NOT EXISTS "idx_branch_metadata_parent"
+          on "branch_metadata" ("parent_branch_name");
+      `);
+    },
+  },
+  {
+    name: '20260212_add_validation_columns',
+    up(db) {
+      addColumn(db, 'branch_revision', 'text');
+      addColumn(db, 'validation_result', 'text');
+    },
+  },
+  {
+    name: '20260220_add_parent_head_revision',
+    up(db) {
+      addColumn(db, 'parent_head_revision', 'text');
+    },
+  },
+  {
+    name: '20260717_normalize_graph_topology',
+    up(db) {
+      normalizeGraphTopology(db);
+    },
+  },
+];
 
 export interface RepoConfig {
   trunk: string;
@@ -136,7 +182,7 @@ export class MetadataStore {
         parentBranchRevision: null,
         lastSubmittedVersion: existing?.lastSubmittedVersion ?? null,
         state: existing?.state ?? null,
-        children: reset ? [] : (existing?.children ?? []),
+        siblingOrder: 0,
         branchRevision: trunkRevision,
         validationResult: existing?.validationResult ?? null,
         parentHeadRevision: null,
@@ -166,7 +212,7 @@ export class MetadataStore {
       .prepare(
         `INSERT INTO branch_metadata (
           branch_name, parent_branch_name, parent_branch_revision,
-          last_submitted_version, state, children, branch_revision,
+          last_submitted_version, state, sibling_order, branch_revision,
           validation_result, parent_head_revision
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(branch_name) DO UPDATE SET
@@ -174,7 +220,7 @@ export class MetadataStore {
           parent_branch_revision = excluded.parent_branch_revision,
           last_submitted_version = excluded.last_submitted_version,
           state = excluded.state,
-          children = excluded.children,
+          sibling_order = excluded.sibling_order,
           branch_revision = excluded.branch_revision,
           validation_result = excluded.validation_result,
           parent_head_revision = excluded.parent_head_revision`,
@@ -185,96 +231,61 @@ export class MetadataStore {
         row.parentBranchRevision,
         row.lastSubmittedVersion,
         row.state,
-        JSON.stringify(row.children),
+        row.siblingOrder,
         row.branchRevision,
         row.validationResult,
         row.parentHeadRevision,
       );
   }
 
-  delete(branch: string): void {
-    const row = this.get(branch);
-    if (!row) return;
-    this.transaction(() => {
-      if (row.parentBranchName) {
-        const parent = this.get(row.parentBranchName);
-        if (parent) {
-          parent.children = parent.children.filter((child) => child !== branch);
-          this.put(parent);
-        }
-      }
-      this.db.prepare('DELETE FROM branch_metadata WHERE branch_name = ?').run(branch);
-    });
+  childrenOf(parent: string): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT branch_name FROM branch_metadata
+           WHERE parent_branch_name = ? ORDER BY sibling_order, rowid`,
+        )
+        .all(parent) as Array<{ branch_name: string }>
+    ).map((row) => row.branch_name);
   }
 
-  deleteAndReparent(branch: string, parent: string, children: string[]): void {
+  deleteAndReparent(branch: string, parent: string): string[] {
     const row = this.get(branch);
-    if (!row) return;
-    this.transaction(() => {
-      const parentRow = this.get(parent);
-      if (!parentRow) throw new Error(`Missing metadata for parent ${parent}`);
-      parentRow.children = parentRow.children.filter((name) => name !== branch);
+    if (!row) throw new Error(`Missing metadata for ${branch}`);
+    return this.transaction(() => {
+      if (!this.get(parent)) throw new Error(`Missing metadata for parent ${parent}`);
+      const children = this.childrenOf(branch);
+      let siblingOrder = this.nextSiblingOrder(parent);
       for (const child of children) {
         const childRow = this.get(child);
         if (!childRow) continue;
         childRow.parentBranchName = parent;
-        if (!parentRow.children.includes(child)) parentRow.children.push(child);
+        childRow.siblingOrder = siblingOrder;
+        siblingOrder += 1;
         this.put(childRow);
       }
-      this.put(parentRow);
       this.db.prepare('DELETE FROM branch_metadata WHERE branch_name = ?').run(branch);
+      return children;
     });
   }
 
   track(branch: string, parent: string, parentRevision: string, branchRevision: string): void {
     this.transaction(() => {
       const previous = this.get(branch);
-      if (previous?.parentBranchName && previous.parentBranchName !== parent) {
-        const oldParent = this.get(previous.parentBranchName);
-        if (oldParent) {
-          oldParent.children = oldParent.children.filter((name) => name !== branch);
-          this.put(oldParent);
-        }
-      }
-      const parentRow = this.get(parent);
-      if (parentRow && !parentRow.children.includes(branch)) {
-        parentRow.children.push(branch);
-        this.put(parentRow);
-      }
       this.put({
         branchName: branch,
         parentBranchName: parent,
         parentBranchRevision: parentRevision,
         lastSubmittedVersion: previous?.lastSubmittedVersion ?? null,
         state: previous?.state ?? null,
-        children: previous?.children ?? [],
+        siblingOrder:
+          previous?.parentBranchName === parent
+            ? previous.siblingOrder
+            : this.nextSiblingOrder(parent),
         branchRevision,
         validationResult: null,
         parentHeadRevision: parentRevision,
       });
-    });
-  }
-
-  setParent(branch: string, parent: string, baseRevision: string): void {
-    const row = this.get(branch);
-    if (!row) throw new Error(`Missing metadata for ${branch}`);
-    this.transaction(() => {
-      if (row.parentBranchName) {
-        const previous = this.get(row.parentBranchName);
-        if (previous) {
-          previous.children = previous.children.filter((child) => child !== branch);
-          this.put(previous);
-        }
-      }
-      const next = this.get(parent);
-      if (next && !next.children.includes(branch)) {
-        next.children.push(branch);
-        this.put(next);
-      }
-      row.parentBranchName = parent;
-      row.parentBranchRevision = baseRevision;
-      row.parentHeadRevision = baseRevision;
-      this.put(row);
     });
   }
 
@@ -288,18 +299,9 @@ export class MetadataStore {
       const row = this.get(branch);
       if (!row) throw new Error(`Missing metadata for ${branch}`);
       if (newParent && row.parentBranchName !== newParent) {
-        if (row.parentBranchName) {
-          const previous = this.get(row.parentBranchName);
-          if (previous) {
-            previous.children = previous.children.filter((child) => child !== branch);
-            this.put(previous);
-          }
-        }
-        const next = this.get(newParent);
-        if (!next) throw new Error(`Missing metadata for parent ${newParent}`);
-        if (!next.children.includes(branch)) next.children.push(branch);
-        this.put(next);
+        if (!this.get(newParent)) throw new Error(`Missing metadata for parent ${newParent}`);
         row.parentBranchName = newParent;
+        row.siblingOrder = this.nextSiblingOrder(newParent);
       }
       row.parentBranchRevision = parentRevision;
       row.parentHeadRevision = parentRevision;
@@ -320,14 +322,15 @@ export class MetadataStore {
     const row = rows.get(branch);
     if (!row) throw new Error(`Missing metadata for ${branch}`);
     if (newParent && row.parentBranchName !== newParent) {
-      if (row.parentBranchName) {
-        const previous = rows.get(row.parentBranchName);
-        if (previous) previous.children = previous.children.filter((child) => child !== branch);
-      }
-      const next = rows.get(newParent);
-      if (!next) throw new Error(`Missing metadata for parent ${newParent}`);
-      if (!next.children.includes(branch)) next.children.push(branch);
+      if (!rows.has(newParent)) throw new Error(`Missing metadata for parent ${newParent}`);
       row.parentBranchName = newParent;
+      row.siblingOrder =
+        Math.max(
+          -1,
+          ...snapshot.rows
+            .filter((candidate) => candidate.parentBranchName === newParent)
+            .map((candidate) => candidate.siblingOrder),
+        ) + 1;
     }
     row.parentBranchRevision = parentRevision;
     row.parentHeadRevision = parentRevision;
@@ -368,19 +371,6 @@ export class MetadataStore {
 
   private ensureSchema(): void {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS "branch_metadata" (
-        "branch_name" text not null primary key,
-        "parent_branch_name" text,
-        "parent_branch_revision" text,
-        "last_submitted_version" text,
-        "state" text,
-        "children" text,
-        "branch_revision" text,
-        "validation_result" text,
-        "parent_head_revision" text
-      );
-      CREATE INDEX IF NOT EXISTS "idx_branch_metadata_parent"
-        on "branch_metadata" ("parent_branch_name");
       CREATE TABLE IF NOT EXISTS "kysely_migration" (
         "name" varchar(255) not null primary key,
         "timestamp" varchar(255) not null
@@ -390,22 +380,32 @@ export class MetadataStore {
         "is_locked" integer default 0 not null
       );
     `);
-    const insertMigration = this.db.prepare(
-      'INSERT OR IGNORE INTO kysely_migration (name, timestamp) VALUES (?, ?)',
-    );
-    for (const name of [
-      '20260211_initial_schema',
-      '20260212_add_validation_columns',
-      '20260220_add_parent_head_revision',
-    ]) {
-      insertMigration.run(name, new Date().toISOString());
-    }
     this.db
       .prepare(
         `INSERT OR IGNORE INTO kysely_migration_lock (id, is_locked)
          VALUES ('migration_lock', 0)`,
       )
       .run();
+    const applied = new Set(
+      (this.db.prepare('SELECT name FROM kysely_migration').all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      ),
+    );
+    const recordMigration = this.db.prepare(
+      'INSERT INTO kysely_migration (name, timestamp) VALUES (?, ?)',
+    );
+    for (const migration of SCHEMA_MIGRATIONS) {
+      if (applied.has(migration.name)) continue;
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        migration.up(this.db);
+        recordMigration.run(migration.name, new Date().toISOString());
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    }
   }
 
   private importLegacyMetadata(): void {
@@ -450,7 +450,7 @@ export class MetadataStore {
           parentBranchRevision: null,
           lastSubmittedVersion: null,
           state: null,
-          children: [],
+          siblingOrder: 0,
           branchRevision: this.git.tryHead(item.parent) ?? null,
           validationResult: null,
           parentHeadRevision: null,
@@ -463,28 +463,151 @@ export class MetadataStore {
   private gitFile(file: string): string {
     return readFileSync(file, 'utf8');
   }
+
+  private nextSiblingOrder(parent: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(sibling_order) + 1, 0) AS next
+         FROM branch_metadata WHERE parent_branch_name = ?`,
+      )
+      .get(parent) as { next: number };
+    return row.next;
+  }
 }
 
 function fromRow(row: DatabaseRow): BranchMetadata {
-  let children: string[] = [];
-  try {
-    const parsed = JSON.parse(row.children ?? '[]') as unknown;
-    if (Array.isArray(parsed))
-      children = parsed.filter((value): value is string => typeof value === 'string');
-  } catch {
-    children = [];
-  }
   return {
     branchName: row.branch_name,
     parentBranchName: row.parent_branch_name,
     parentBranchRevision: row.parent_branch_revision,
     lastSubmittedVersion: row.last_submitted_version,
     state: row.state,
-    children,
+    siblingOrder: row.sibling_order,
     branchRevision: row.branch_revision,
     validationResult: row.validation_result,
     parentHeadRevision: row.parent_head_revision,
   };
+}
+
+function hasColumn(db: DatabaseSync, column: string): boolean {
+  return (db.prepare('PRAGMA table_info("branch_metadata")').all() as Array<{ name: string }>).some(
+    (candidate) => candidate.name === column,
+  );
+}
+
+function addColumn(db: DatabaseSync, column: string, type: string): void {
+  if (!hasColumn(db, column))
+    db.exec(`ALTER TABLE "branch_metadata" ADD COLUMN "${column}" ${type}`);
+}
+
+interface LegacyTopologyRow {
+  source_order: number;
+  branch_name: string;
+  parent_branch_name: string | null;
+  parent_branch_revision: string | null;
+  last_submitted_version: string | null;
+  state: string | null;
+  children: string | null;
+  branch_revision: string | null;
+  validation_result: ValidationResult;
+  parent_head_revision: string | null;
+}
+
+function normalizeGraphTopology(db: DatabaseSync): void {
+  if (!hasColumn(db, 'children')) {
+    addColumn(db, 'sibling_order', 'integer not null default 0');
+    assignSiblingOrder(db);
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS "idx_branch_metadata_parent" on "branch_metadata" ("parent_branch_name")',
+    );
+    return;
+  }
+
+  const rows = db
+    .prepare('SELECT rowid AS source_order, * FROM branch_metadata ORDER BY rowid')
+    .all() as unknown as LegacyTopologyRow[];
+  const rowsByParent = new Map<string, LegacyTopologyRow[]>();
+  for (const row of rows) {
+    if (!row.parent_branch_name) continue;
+    const siblings = rowsByParent.get(row.parent_branch_name) ?? [];
+    siblings.push(row);
+    rowsByParent.set(row.parent_branch_name, siblings);
+  }
+  const siblingOrders = new Map<string, number>();
+  for (const [parent, siblings] of rowsByParent) {
+    const siblingNames = new Set(siblings.map((row) => row.branch_name));
+    const declared = parseLegacyChildren(rows.find((row) => row.branch_name === parent)?.children);
+    const ordered = [
+      ...declared.filter((branch) => siblingNames.has(branch)),
+      ...siblings.map((row) => row.branch_name).filter((branch) => !declared.includes(branch)),
+    ];
+    ordered.forEach((branch, index) => siblingOrders.set(branch, index));
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS "idx_branch_metadata_parent";
+    CREATE TABLE "branch_metadata_next" (
+      "branch_name" text not null primary key,
+      "parent_branch_name" text,
+      "parent_branch_revision" text,
+      "last_submitted_version" text,
+      "state" text,
+      "sibling_order" integer not null,
+      "branch_revision" text,
+      "validation_result" text,
+      "parent_head_revision" text
+    );
+  `);
+  const insert = db.prepare(`
+    INSERT INTO "branch_metadata_next" (
+      branch_name, parent_branch_name, parent_branch_revision,
+      last_submitted_version, state, sibling_order, branch_revision,
+      validation_result, parent_head_revision
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of rows) {
+    insert.run(
+      row.branch_name,
+      row.parent_branch_name,
+      row.parent_branch_revision,
+      row.last_submitted_version,
+      row.state,
+      siblingOrders.get(row.branch_name) ?? 0,
+      row.branch_revision,
+      row.validation_result,
+      row.parent_head_revision,
+    );
+  }
+  db.exec(`
+    DROP TABLE "branch_metadata";
+    ALTER TABLE "branch_metadata_next" RENAME TO "branch_metadata";
+    CREATE INDEX "idx_branch_metadata_parent"
+      on "branch_metadata" ("parent_branch_name");
+  `);
+}
+
+function assignSiblingOrder(db: DatabaseSync): void {
+  const rows = db
+    .prepare('SELECT rowid, parent_branch_name FROM branch_metadata ORDER BY rowid')
+    .all() as Array<{ rowid: number; parent_branch_name: string | null }>;
+  const nextOrder = new Map<string | null, number>();
+  const update = db.prepare('UPDATE branch_metadata SET sibling_order = ? WHERE rowid = ?');
+  for (const row of rows) {
+    const order = nextOrder.get(row.parent_branch_name) ?? 0;
+    update.run(order, row.rowid);
+    nextOrder.set(row.parent_branch_name, order + 1);
+  }
+}
+
+function parseLegacyChildren(value: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value ?? '[]') as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((child): child is string => typeof child === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export function atomicWrite(file: string, contents: string, mode: number): void {

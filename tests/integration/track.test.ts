@@ -68,8 +68,10 @@ describe('track', () => {
           .get('existing'),
       ).toEqual({ parent_branch_name: 'main' });
       expect(
-        db.prepare('SELECT children FROM branch_metadata WHERE branch_name = ?').get('parent'),
-      ).toEqual({ children: '[]' });
+        db
+          .prepare('SELECT count(*) AS count FROM branch_metadata WHERE parent_branch_name = ?')
+          .get('parent'),
+      ).toEqual({ count: 0 });
       db.close();
     });
   });

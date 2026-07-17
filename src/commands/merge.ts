@@ -1,5 +1,6 @@
 import { confirm } from '@inquirer/prompts';
 import chalk from 'chalk';
+import { deleteTrackedBranch } from '../branch-cleanup.js';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
@@ -32,7 +33,7 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
 
   context.requireInteractive();
   const visibleBranches = [...lineage, ...graph.descendants(current)];
-  for (const line of renderMoveTree(graph, visibleBranches, current)) output.line(line);
+  output.lines(renderMoveTree(graph, visibleBranches, current));
   const approved = await confirm({
     message: `${bottom} will be merged into ${graph.trunk} and this tree will be restacked. Confirm?`,
     default: true,
@@ -81,7 +82,7 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
 
   git.updateRef(graph.trunk, remoteAfter, localBefore);
   store.updateBranchRevision(graph.trunk, remoteAfter);
-  removeMergedBranch(context, bottom, graph.trunk);
+  const { reparentedChildren: remainingRoots } = deleteTrackedBranch(context, bottom, graph.trunk);
 
   output.line();
   output.line(
@@ -93,7 +94,6 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
   );
 
   if (descendants.length > 0) {
-    const remainingRoots = graph.children(bottom);
     const relations = descendants.map((branch) => {
       const parent = store.get(branch)?.parentBranchName;
       if (!parent) throw ggError(`Tracked metadata for ${branch} has no parent.`);
@@ -147,23 +147,4 @@ function fetchTrunk(context: RepositoryContext, remote: string, trunk: string): 
     remote,
     `+refs/heads/${trunk}:refs/remotes/${remote}/${trunk}`,
   ]);
-}
-
-function removeMergedBranch(context: RepositoryContext, branch: string, trunk: string): void {
-  const row = context.store.get(branch);
-  if (!row) throw ggError(`Tracked metadata for ${branch} is missing.`);
-  const previous = context.git.head(branch);
-  const children = row.children.filter((child) => context.git.branchExists(child));
-  const wasCurrent = context.git.tryBranch() === branch;
-  if (wasCurrent) context.git.switch(trunk);
-
-  const metadataBefore = context.store.snapshot();
-  context.store.deleteAndReparent(branch, trunk, children);
-  try {
-    context.git.deleteRef(branch, previous);
-  } catch (error) {
-    context.store.restore(metadataBefore);
-    if (wasCurrent) context.git.switch(branch);
-    throw error;
-  }
 }

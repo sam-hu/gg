@@ -5,13 +5,28 @@ import type { BranchMetadata, MetadataStore } from './metadata.js';
 export class StackGraph {
   readonly trunk: string;
   private readonly rows: Map<string, BranchMetadata>;
+  private readonly childrenByParent = new Map<string, string[]>();
 
   constructor(
     private readonly git: Git,
     private readonly store: MetadataStore,
   ) {
     this.trunk = store.trunk();
-    this.rows = new Map(store.all().map((row) => [row.branchName, row]));
+    const rows = store.all();
+    this.rows = new Map(rows.map((row) => [row.branchName, row]));
+    for (const row of rows) {
+      if (!row.parentBranchName) continue;
+      const children = this.childrenByParent.get(row.parentBranchName) ?? [];
+      children.push(row.branchName);
+      this.childrenByParent.set(row.parentBranchName, children);
+    }
+    for (const children of this.childrenByParent.values()) {
+      children.sort(
+        (left, right) =>
+          this.rows.get(left)!.siblingOrder - this.rows.get(right)!.siblingOrder ||
+          left.localeCompare(right),
+      );
+    }
   }
 
   refresh(): { diverged: string[]; missing: string[] } {
@@ -100,10 +115,9 @@ export class StackGraph {
   }
 
   children(branch: string, lexical = false): string[] {
-    const row = this.get(branch);
     // Metadata deliberately survives a branch being deleted so `log` can report
     // the missing ref. Traversal must not treat those stale rows as navigable.
-    const children = (row?.children ?? []).filter(
+    const children = (this.childrenByParent.get(branch) ?? []).filter(
       (child) => this.rows.has(child) && this.git.branchExists(child),
     );
     return lexical ? children.toSorted((left, right) => left.localeCompare(right)) : children;

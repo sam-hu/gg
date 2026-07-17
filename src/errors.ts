@@ -17,9 +17,3 @@ export function ggError(message: string): UserError {
     .join('\n');
   return new UserError(rendered, { raw: true });
 }
-
-export function assertUser(condition: unknown, message: string): asserts condition {
-  if (!condition) {
-    throw ggError(message);
-  }
-}

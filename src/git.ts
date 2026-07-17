@@ -103,34 +103,29 @@ export class Git {
     // Scope snapshots to callers that do not mutate refs so every command starts
     // from fresh repository state while repeated reads avoid new Git processes.
     const previousReadCache = this.readCache;
-    const previousBranchHeadCache = this.branchHeadCache;
     this.readCache = new Map();
-    this.branchHeadCache = this.loadBranchHeads();
     try {
-      return callback();
+      return this.withRefSnapshot(callback);
     } finally {
       this.readCache = previousReadCache;
-      this.branchHeadCache = previousBranchHeadCache;
     }
   }
 
   withRefSnapshot<T>(callback: () => T): T {
-    const previousBranchHeadCache = this.branchHeadCache;
-    this.branchHeadCache = this.loadBranchHeads();
+    const restore = this.beginRefSnapshot();
     try {
       return callback();
     } finally {
-      this.branchHeadCache = previousBranchHeadCache;
+      restore();
     }
   }
 
   async withRefSnapshotAsync<T>(callback: () => Promise<T>): Promise<T> {
-    const previousBranchHeadCache = this.branchHeadCache;
-    this.branchHeadCache = this.loadBranchHeads();
+    const restore = this.beginRefSnapshot();
     try {
       return await callback();
     } finally {
-      this.branchHeadCache = previousBranchHeadCache;
+      restore();
     }
   }
 
@@ -185,20 +180,12 @@ export class Git {
     return result.status === 0 ? result.stdout.trim() : undefined;
   }
 
-  mergeBase(left: string, right: string): string {
-    return this.capture(['merge-base', left, right]);
-  }
-
   isAncestor(ancestor: string, descendant: string): boolean {
     return this.succeeds(['merge-base', '--is-ancestor', ancestor, descendant]);
   }
 
   hasStagedChanges(): boolean {
     return this.run(['diff', '--cached', '--quiet'], { allowFailure: true }).status !== 0;
-  }
-
-  hasTrackedChanges(): boolean {
-    return this.run(['diff', '--quiet'], { allowFailure: true }).status !== 0;
   }
 
   hasAnyChanges(): boolean {
@@ -256,6 +243,14 @@ export class Git {
       heads.set(line.slice(0, separator), line.slice(separator + 1));
     }
     return heads;
+  }
+
+  private beginRefSnapshot(): () => void {
+    const previous = this.branchHeadCache;
+    this.branchHeadCache = this.loadBranchHeads();
+    return () => {
+      this.branchHeadCache = previous;
+    };
   }
 }
 
