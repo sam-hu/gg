@@ -6,11 +6,17 @@ export interface BranchRelation {
   parent: string;
 }
 
+export interface RestackResultOptions {
+  leadingBlank?: boolean;
+  showReady?: boolean;
+}
+
 export function renderRestackResult(
   output: Output,
   relations: BranchRelation[],
-  leadingBlank = false,
+  options: RestackResultOptions = {},
 ): void {
+  const { leadingBlank = false, showReady = true } = options;
   if (relations.length > 0) {
     if (leadingBlank) output.line();
     output.line(
@@ -22,7 +28,7 @@ export function renderRestackResult(
     );
     output.line();
   }
-  output.line(`${chalk.green('✔')} ${chalk.bold('Stack ready.')}`);
+  if (showReady) output.line(`${chalk.green('✔')} ${chalk.bold('Stack ready.')}`);
 }
 
 export function renderRelation(branch: string, parent: string): string {

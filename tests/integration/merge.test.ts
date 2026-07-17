@@ -38,7 +38,15 @@ describe('merge', () => {
           '  ├─ b → main',
           '  └─ c → b',
           '',
-          '✔ Stack ready.',
+          '🥞 Validating stack...',
+          '',
+          'Submitting 2 branches',
+          '  ├─ ✔ PR #2  b → main  (updated)',
+          '  │    https://github.com/owner/repo/pull/2',
+          '  └─ ✔ PR #3  c → b  (updated)',
+          '       https://github.com/owner/repo/pull/3',
+          '',
+          '✔ Stack submitted.',
         ].join('\n'),
       );
       expect(plainOutput).not.toContain('Branches to restack:');
@@ -71,6 +79,11 @@ describe('merge', () => {
         body: { merge_method: 'squash', sha: state.expectedHead },
       });
       expect(state.prs[0].merged_at).toBeTruthy();
+      expect(state.prs.find((pullRequest: any) => pullRequest.number === 2).base.ref).toBe('main');
+      expect(state.prs.find((pullRequest: any) => pullRequest.number === 3).base.ref).toBe('b');
+      expect(head(bare, 'b')).toBe(head(repo, 'b'));
+      expect(head(bare, 'c')).toBe(head(repo, 'c'));
+      expect(state.comments).toHaveLength(2);
     });
   });
 
@@ -155,6 +168,32 @@ function createSubmittedStack(root: string): {
         body: '',
         head: { ref: 'a' },
         base: { ref: 'main' },
+        requested_reviewers: [],
+        requested_teams: [],
+      },
+      {
+        number: 2,
+        node_id: 'PR_merge_2',
+        html_url: 'https://github.com/owner/repo/pull/2',
+        state: 'open',
+        draft: false,
+        title: 'B',
+        body: '',
+        head: { ref: 'b' },
+        base: { ref: 'a' },
+        requested_reviewers: [],
+        requested_teams: [],
+      },
+      {
+        number: 3,
+        node_id: 'PR_merge_3',
+        html_url: 'https://github.com/owner/repo/pull/3',
+        state: 'open',
+        draft: false,
+        title: 'C',
+        body: '',
+        head: { ref: 'c' },
+        base: { ref: 'b' },
         requested_reviewers: [],
         requested_teams: [],
       },

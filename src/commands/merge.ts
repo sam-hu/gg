@@ -11,6 +11,7 @@ import {
 import { renderMoveTree } from '../move-tree.js';
 import { RestackEngine } from '../restack.js';
 import { renderRelation, renderRestackResult } from '../restack-output.js';
+import { submit } from './submit.js';
 
 export async function mergeBottomBranch(context: RepositoryContext): Promise<void> {
   await context.ensureInitialized();
@@ -92,13 +93,17 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
   );
 
   if (descendants.length > 0) {
+    const remainingRoots = graph.children(bottom);
     const relations = descendants.map((branch) => {
       const parent = store.get(branch)?.parentBranchName;
       if (!parent) throw ggError(`Tracked metadata for ${branch} has no parent.`);
       return { branch, parent };
     });
     await engine.runQueue(descendants, { command: 'merge', haltOnConflict: true, quiet: true });
-    renderRestackResult(output, relations, true);
+    renderRestackResult(output, relations, { leadingBlank: true, showReady: false });
+    for (const root of remainingRoots) {
+      await submit(context, { branch: root, stack: true });
+    }
   } else {
     output.line();
     renderRestackResult(output, []);
