@@ -94,7 +94,7 @@ export function renderMoveTree(
 ): string[] {
   return buildMoveTreeChoices(tree, candidates, colors).map((choice) => {
     if (choice.value !== current) return choice.name;
-    const line = choice.activeName.replace('○', '◉');
+    const line = choice.name.replace('○', '◉');
     return `${line}${colors ? chalk.cyan(' (current)') : ' (current)'}`;
   });
 }
