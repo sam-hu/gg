@@ -68,7 +68,7 @@ Submission performs all read-only validation first: repository, authentication, 
 
 1. inspect the exact remote branch OID;
 2. push normally when possible;
-3. require explicit authorization for a non-fast-forward update and use a pinned `--force-with-lease`;
+3. automatically use a pinned `--force-with-lease` for a non-fast-forward update;
 4. create or update the branch's PR;
 5. discover open PRs across every tracked branch and create or update one managed stack comment on each PR;
 6. record the submitted commit only after the PR operations and stack-comment refresh succeed.

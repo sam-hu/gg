@@ -222,7 +222,7 @@ describe('core stacked-branch workflow', () => {
     });
   });
 
-  test('reports missing tracked branches and protects staged checked-out restacks', async () => {
+  test('silently omits missing tracked branches and protects staged checked-out restacks', async () => {
     await withTempRoot('safety', (root) => {
       const repo = initRepo(root);
       expectSuccess(gg(repo, ['init', '--trunk', 'main']));
@@ -240,7 +240,9 @@ describe('core stacked-branch workflow', () => {
       expectSuccess(git(repo, 'reset', '-q'));
       expectSuccess(git(repo, 'branch', '-D', 'a'));
       const log = gg(repo, ['log', 'short']);
-      expect(log.stdout).toContain('no longer exist locally');
+      expectSuccess(log);
+      expect(log.stdout).not.toContain('no longer exist locally');
+      expect(log.stdout).not.toContain('◯  a');
     });
   });
 
