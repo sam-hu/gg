@@ -45,6 +45,7 @@ interface SubmitPlanItem {
   branch: string;
   base: string;
   localHead: string;
+  codeUnchanged: boolean;
   title: string;
   body: string;
   openPullRequest?: PullRequest;
@@ -145,10 +146,14 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
     const parent = graph.parent(branch);
     if (!parent) continue;
     const openPullRequest = open[0];
+    const localHead = git.head(branch);
     plan.push({
       branch,
       base: parent === graph.trunk ? (options.targetTrunk ?? graph.trunk) : parent,
-      localHead: git.head(branch),
+      localHead,
+      codeUnchanged: Boolean(
+        openPullRequest && graph.get(branch)?.lastSubmittedVersion === localHead,
+      ),
       title: git.capture(['show', '-s', '--format=%s', branch]),
       body: openPullRequest ? withoutLegacyStackDescription(openPullRequest.body) : '',
       ...(openPullRequest ? { openPullRequest } : {}),
@@ -267,9 +272,13 @@ function renderSubmittedItem(
   const last = index === total - 1;
   const connector = last ? '└─' : '├─';
   const continuation = last ? '  ' : '│ ';
-  const action = item.openPullRequest ? 'updated' : 'created';
+  const action = !item.openPullRequest
+    ? chalk.green('(created)')
+    : item.codeUnchanged
+      ? chalk.dim('(unchanged)')
+      : chalk.yellow('(updated)');
   output.line(
-    `  ${chalk.dim(connector)} ${chalk.green('✔')} ${chalk.bold(`PR #${pullRequest.number}`)}  ${renderRelation(item.branch, item.base)}  ${chalk.dim(action)}`,
+    `  ${chalk.dim(connector)} ${chalk.green('✔')} ${chalk.bold(`PR #${pullRequest.number}`)}  ${renderRelation(item.branch, item.base)}  ${action}`,
   );
   output.line(`  ${chalk.dim(continuation)}   ${chalk.blue.underline(pullRequest.url)}`);
 }

@@ -140,9 +140,9 @@ describe('GitHub submission through an offline fake gh', () => {
       expect(stripVTControlCharacters(first.stdout)).toContain(
         [
           'Submitting 2 branches',
-          '  ├─ ✔ PR #101  a → main  created',
+          '  ├─ ✔ PR #101  a → main  (created)',
           '  │    https://github.com/owner/repo/pull/101',
-          '  └─ ✔ PR #102  b → a  created',
+          '  └─ ✔ PR #102  b → a  (created)',
           '       https://github.com/owner/repo/pull/102',
           '',
           '✔ Stack submitted.',
@@ -151,6 +151,7 @@ describe('GitHub submission through an offline fake gh', () => {
       expect(first.stdout).toContain('https://github.com/owner/repo/pull/101');
       expect(first.stdout).toContain('\u001b[34m');
       expect(first.stdout).toContain('\u001b[4m');
+      expect(first.stdout).toContain('\u001b[32m(created)\u001b[39m');
       const afterFirst = stateFrom(env);
       expect(afterFirst.prs).toHaveLength(2);
       expect(afterFirst.prs.map((pr: any) => [pr.head.ref, pr.base.ref])).toEqual([
@@ -192,6 +193,21 @@ describe('GitHub submission through an offline fake gh', () => {
       expect(stateFrom(env).comments).toHaveLength(2);
       expect(stateFrom(env).calls).toHaveLength(afterFirst.calls.length);
 
+      expectSuccess(git(repo, 'switch', '-q', 'b'));
+      write(repo, 'b.txt', 'b updated\n');
+      expectSuccess(git(repo, 'add', 'b.txt'));
+      expectSuccess(git(repo, 'commit', '-q', '-m', 'B title'));
+      const changedTop = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
+      expectSuccess(changedTop);
+      expect(stripVTControlCharacters(changedTop.stdout)).toContain(
+        '├─ ✔ PR #101  a → main  (unchanged)',
+      );
+      expect(stripVTControlCharacters(changedTop.stdout)).toContain(
+        '└─ ✔ PR #102  b → a  (updated)',
+      );
+      expect(changedTop.stdout).toContain('\u001b[2m(unchanged)\u001b[22m');
+      expect(changedTop.stdout).toContain('\u001b[33m(updated)\u001b[39m');
+
       const changed = stateFrom(env);
       changed.prs[0].body = 'Stacked branch: `a`\n\nBase: `main`\n\nHuman-authored notes.';
       changed.prs[1].body = 'Stacked branch: `b`\n\nBase: `a`';
@@ -201,9 +217,11 @@ describe('GitHub submission through an offline fake gh', () => {
       const updated = gg(repo, ['submit', '--stack', '--always'], env);
       expectSuccess(updated);
       expect(stripVTControlCharacters(updated.stdout)).toContain(
-        '├─ ✔ PR #101  a → main  updated',
+        '├─ ✔ PR #101  a → main  (unchanged)',
       );
-      expect(stripVTControlCharacters(updated.stdout)).toContain('└─ ✔ PR #102  b → a  updated');
+      expect(stripVTControlCharacters(updated.stdout)).toContain(
+        '└─ ✔ PR #102  b → a  (unchanged)',
+      );
       expect(stateFrom(env).prs[1].base.ref).toBe('a');
       expect(stateFrom(env).prs.map((pr: any) => pr.body)).toEqual(['Human-authored notes.', '']);
 
