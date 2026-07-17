@@ -52,6 +52,13 @@ export interface RestackQueueOptions {
   warnOnConflict?: (branch: string, parent: string) => void;
 }
 
+interface CommitMetadata {
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;
+  message: string;
+}
+
 export class ConflictHalt extends UserError {
   constructor(message: string) {
     super(message, { raw: true });
@@ -164,32 +171,16 @@ export class RestackEngine {
     queue: string[],
     onConflict: (branch: string, parent: string) => void,
   ): Promise<boolean> {
-    this.announceQueue(queue, 'Branches to restack:');
-    const skipped = new Set<string>();
-    for (const branch of queue) {
-      const graph = new StackGraph(this.git, this.store);
-      const row = graph.get(branch);
-      if (!row?.parentBranchName || !row.parentBranchRevision) {
-        throw ggError(`Tracked metadata for ${branch} has no valid parent revision.`);
-      }
-      if (skipped.has(row.parentBranchName)) {
-        skipped.add(branch);
-        continue;
-      }
-      let conflicted = false;
-      await this.runQueue([branch], {
-        command: `restack ${branch}`,
-        haltOnConflict: false,
-        warnOnConflict: (failed, parent) => {
-          conflicted = true;
-          onConflict(failed, parent);
-        },
-      });
-      if (conflicted) {
-        skipped.add(branch);
-      }
-    }
-    return skipped.size === 0;
+    let conflicted = false;
+    await this.runQueue(queue, {
+      command: 'automatic restack',
+      haltOnConflict: false,
+      warnOnConflict: (failed, parent) => {
+        conflicted = true;
+        onConflict(failed, parent);
+      },
+    });
+    return !conflicted;
   }
 
   async continue(all = false): Promise<void> {
@@ -277,8 +268,7 @@ export class RestackEngine {
   }
 
   createState(command: string, queue: string[]): OperationState {
-    const refs: Record<string, string> = {};
-    for (const branch of this.git.branches()) refs[branch] = this.git.head(branch);
+    const refs = Object.fromEntries(this.git.localBranchHeads());
     const metadata = this.store.snapshot();
     return {
       version: 1,
@@ -434,38 +424,32 @@ export class RestackEngine {
 
   previewReplay(branchRevision: string, oldBase: string, newBase: string): ReplayResult {
     if (!this.git.isAncestor(oldBase, branchRevision)) return { kind: 'conflict' };
-    const mergeCommits = this.git.capture([
-      'rev-list',
-      '--merges',
-      `${oldBase}..${branchRevision}`,
-    ]);
-    if (mergeCommits) return { kind: 'conflict' };
     const list = this.git.capture([
       'rev-list',
       '--reverse',
       '--topo-order',
+      '--parents',
       `${oldBase}..${branchRevision}`,
     ]);
-    const commits = list ? list.split('\n').filter(Boolean) : [];
+    const commits: Array<{ commit: string; parent: string }> = [];
+    for (const line of list.split('\n').filter(Boolean)) {
+      const parts = line.split(' ');
+      if (parts.length !== 2) return { kind: 'conflict' };
+      commits.push({ commit: parts[0]!, parent: parts[1]! });
+    }
+    const metadata = this.loadCommitMetadata(commits.map(({ commit }) => commit));
     let nextParent = newBase;
-    for (const commit of commits) {
-      const oldParent = this.git.tryHead(`${commit}^`);
-      if (!oldParent) return { kind: 'conflict' };
+    for (const { commit, parent } of commits) {
+      const commitMetadata = metadata.get(commit);
+      if (!commitMetadata) return { kind: 'conflict' };
       const merge = this.git.run(
-        [
-          'merge-tree',
-          '--write-tree',
-          '--messages',
-          `--merge-base=${oldParent}`,
-          nextParent,
-          commit,
-        ],
+        ['merge-tree', '--write-tree', '--messages', `--merge-base=${parent}`, nextParent, commit],
         { allowFailure: true },
       );
       if (merge.status !== 0) return { kind: 'conflict' };
       const tree = merge.stdout.split('\n')[0]?.trim();
       if (!tree) return { kind: 'conflict' };
-      nextParent = this.recreateCommit(commit, tree, nextParent);
+      nextParent = this.recreateCommit(commitMetadata, tree, nextParent);
     }
     return { kind: 'success', head: nextParent };
   }
@@ -531,7 +515,13 @@ export class RestackEngine {
       }
       if (!options.haltOnConflict) {
         options.warnOnConflict?.(branch, effectiveParent);
-        return;
+        const graph = new StackGraph(this.git, this.store);
+        state.queue = state.queue.filter(
+          (candidate) => !graph.ancestors(candidate).includes(branch),
+        );
+        delete state.active;
+        this.writeState(state);
+        continue;
       }
       await this.materializeConflict(state, active, options.quiet ?? false);
     }
@@ -588,18 +578,39 @@ export class RestackEngine {
     );
   }
 
-  private recreateCommit(commit: string, tree: string, parent: string): string {
-    const data = this.git.run(['show', '-s', '--format=%an%x00%ae%x00%aI%x00%B', commit]).stdout;
-    const [authorName = '', authorEmail = '', authorDate = '', ...messageParts] = data.split('\0');
-    const message = messageParts.join('\0').replace(/\n$/, '');
+  private recreateCommit(metadata: CommitMetadata, tree: string, parent: string): string {
     return this.git.capture(['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', parent], {
-      input: `${message}\n`,
+      input: `${metadata.message}\n`,
       env: {
-        GIT_AUTHOR_NAME: authorName,
-        GIT_AUTHOR_EMAIL: authorEmail,
-        GIT_AUTHOR_DATE: authorDate,
+        GIT_AUTHOR_NAME: metadata.authorName,
+        GIT_AUTHOR_EMAIL: metadata.authorEmail,
+        GIT_AUTHOR_DATE: metadata.authorDate,
       },
     });
+  }
+
+  private loadCommitMetadata(commits: string[]): Map<string, CommitMetadata> {
+    if (commits.length === 0) return new Map();
+    const data = this.git.run(
+      ['log', '--no-walk=unsorted', '--format=%H%x00%an%x00%ae%x00%aI%x00%B%x00%x1e', '--stdin'],
+      { input: `${commits.join('\n')}\n` },
+    ).stdout;
+    const result = new Map<string, CommitMetadata>();
+    for (const record of data.split('\x1e')) {
+      let normalized = record.replace(/^\n/, '');
+      if (normalized.endsWith('\0\n')) normalized = normalized.slice(0, -2);
+      else if (normalized.endsWith('\0')) normalized = normalized.slice(0, -1);
+      if (!normalized) continue;
+      const [commit = '', authorName = '', authorEmail = '', authorDate = '', ...messageParts] =
+        normalized.split('\0');
+      result.set(commit, {
+        authorName,
+        authorEmail,
+        authorDate,
+        message: messageParts.join('\0').replace(/\n$/, ''),
+      });
+    }
+    return result;
   }
 
   private moveBranch(branch: string, next: string, previous: string): void {

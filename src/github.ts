@@ -20,6 +20,7 @@ export interface PullRequest {
   state: 'OPEN' | 'CLOSED' | 'MERGED';
   draft: boolean;
   headRef: string;
+  headOwner: string;
   baseRef: string;
   title: string;
   body: string;
@@ -38,6 +39,7 @@ export interface PullRequestInput {
 export interface IssueComment {
   id: number;
   body: string;
+  pullRequestNumber: number;
 }
 
 export interface MergeResult {
@@ -46,6 +48,7 @@ export interface MergeResult {
 
 export interface GitHubClient {
   preflight(repository: GitHubRepository): Promise<void>;
+  listPullRequests(repository: GitHubRepository): Promise<PullRequest[]>;
   listForHead(repository: GitHubRepository, branch: string): Promise<PullRequest[]>;
   create(repository: GitHubRepository, input: PullRequestInput): Promise<PullRequest>;
   update(
@@ -60,7 +63,7 @@ export interface GitHubClient {
     reviewers: string[],
     teams: string[],
   ): Promise<void>;
-  listComments(repository: GitHubRepository, pullRequest: PullRequest): Promise<IssueComment[]>;
+  listComments(repository: GitHubRepository, pullRequests: PullRequest[]): Promise<IssueComment[]>;
   comment(repository: GitHubRepository, pullRequest: PullRequest, body: string): Promise<void>;
   updateComment(repository: GitHubRepository, comment: IssueComment, body: string): Promise<void>;
   merge(
@@ -148,51 +151,95 @@ export function resolveSubmissionRepository(
   trunk: string,
   branch: string,
 ): GitHubRepository | undefined {
-  const base = resolveRemote(git, trunk);
-  const remotes = git.capture(['remote']).split('\n').filter(Boolean);
-  const branchPush = git.run(['config', '--get', `branch.${branch}.pushRemote`], {
-    allowFailure: true,
-  });
-  const defaultPush = git.run(['config', '--get', 'remote.pushDefault'], { allowFailure: true });
-  const branchRemote = git.run(['config', '--get', `branch.${branch}.remote`], {
-    allowFailure: true,
-  });
-  const pushName =
-    (branchPush.status === 0 && branchPush.stdout.trim()) ||
-    (defaultPush.status === 0 && defaultPush.stdout.trim()) ||
-    (branchRemote.status === 0 &&
-      branchRemote.stdout.trim() !== '.' &&
-      branchRemote.stdout.trim()) ||
-    (remotes.includes('origin') ? 'origin' : base.name);
-  const push = { name: pushName, url: git.capture(['remote', 'get-url', '--push', pushName]) };
-  const baseRepository = resolveGitHubRepository(git, base);
-  if (!baseRepository) return undefined;
-  const headOverride = git.run(['config', '--get', 'gg.githubHeadRepository'], {
-    allowFailure: true,
-  });
-  let headRepository = resolveGitHubRepository(git, push);
-  if (headOverride.status === 0 && headOverride.stdout.trim()) {
-    const pieces = headOverride.stdout.trim().split('/');
+  return new SubmissionRepositoryResolver(git, trunk).resolve(branch);
+}
+
+export class SubmissionRepositoryResolver {
+  private readonly config: Map<string, string>;
+  private readonly remotes: string[];
+  private readonly base: { name: string; url: string };
+  private readonly baseRepository: GitHubRepository | undefined;
+  private readonly pushUrls = new Map<string, string>();
+
+  constructor(
+    private readonly git: Git,
+    trunk: string,
+  ) {
+    this.config = readGitConfig(git);
+    this.remotes = git.capture(['remote']).split('\n').filter(Boolean);
+    const configured = this.config.get(`branch.${trunk}.remote`);
+    const name =
+      configured && configured !== '.'
+        ? configured
+        : this.remotes.includes('origin')
+          ? 'origin'
+          : this.remotes.length === 1
+            ? this.remotes[0]!
+            : undefined;
+    if (!name) throw ggError('Could not determine which Git remote to use.');
+    this.base = { name, url: git.capture(['remote', 'get-url', name]) };
+    this.baseRepository = repositoryFromOverride(this.config.get('gg.githubrepository'), this.base);
+  }
+
+  resolve(branch: string): GitHubRepository | undefined {
+    if (!this.baseRepository) return undefined;
+    const branchRemote = this.config.get(`branch.${branch}.remote`);
+    const pushName =
+      this.config.get(`branch.${branch}.pushremote`) ??
+      this.config.get('remote.pushdefault') ??
+      (branchRemote && branchRemote !== '.' ? branchRemote : undefined) ??
+      (this.remotes.includes('origin') ? 'origin' : this.base.name);
+    let pushUrl = this.pushUrls.get(pushName);
+    if (!pushUrl) {
+      pushUrl = this.git.capture(['remote', 'get-url', '--push', pushName]);
+      this.pushUrls.set(pushName, pushUrl);
+    }
+    const push = { name: pushName, url: pushUrl };
+    const headRepository = repositoryFromOverride(
+      this.config.get('gg.githubheadrepository') ?? this.config.get('gg.githubrepository'),
+      push,
+    );
+    if (!headRepository || headRepository.host !== this.baseRepository.host) return undefined;
+    return {
+      ...this.baseRepository,
+      remote: pushName,
+      pushUrl,
+      baseRemote: this.base.name,
+      headOwner: headRepository.owner,
+    };
+  }
+}
+
+function readGitConfig(git: Git): Map<string, string> {
+  const output = git.run(['config', '--null', '--list']).stdout;
+  const config = new Map<string, string>();
+  for (const entry of output.split('\0')) {
+    const separator = entry.indexOf('\n');
+    if (separator < 0) continue;
+    config.set(entry.slice(0, separator), entry.slice(separator + 1));
+  }
+  return config;
+}
+
+function repositoryFromOverride(
+  override: string | undefined,
+  remote: { name: string; url: string },
+): GitHubRepository | undefined {
+  if (override) {
+    const pieces = override.split('/');
     if (pieces.length === 3) {
-      headRepository = {
+      return {
         host: pieces[0]!,
         owner: pieces[1]!,
         name: pieces[2]!,
-        remote: push.name,
-        pushUrl: push.url,
-        baseRemote: base.name,
+        remote: remote.name,
+        pushUrl: remote.url,
+        baseRemote: remote.name,
         headOwner: pieces[1]!,
       };
     }
   }
-  if (!headRepository || headRepository.host !== baseRepository.host) return undefined;
-  return {
-    ...baseRepository,
-    remote: push.name,
-    pushUrl: push.url,
-    baseRemote: base.name,
-    headOwner: headRepository.owner,
-  };
+  return parseGitHubRepository(remote.name, remote.url);
 }
 
 export async function authenticatedGitHubClient(
@@ -231,15 +278,25 @@ class GhClient implements GitHubClient {
     this.api(repository, 'GET', `repos/${repository.owner}/${repository.name}`);
   }
 
+  async listPullRequests(repository: GitHubRepository): Promise<PullRequest[]> {
+    const pullRequests: PullRequest[] = [];
+    for (let page = 1; ; page += 1) {
+      const value = this.api(
+        repository,
+        'GET',
+        `repos/${repository.owner}/${repository.name}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(value)) throw ggError('GitHub returned malformed pull-request data.');
+      const batch = value.map(normalizePullRequest);
+      pullRequests.push(...batch);
+      if (batch.length < 100) return pullRequests;
+    }
+  }
+
   async listForHead(repository: GitHubRepository, branch: string): Promise<PullRequest[]> {
-    const head = encodeURIComponent(`${repository.headOwner}:${branch}`);
-    const value = this.api(
-      repository,
-      'GET',
-      `repos/${repository.owner}/${repository.name}/pulls?state=all&head=${head}&sort=updated&direction=desc&per_page=100`,
+    return (await this.listPullRequests(repository)).filter((pullRequest) =>
+      matchesHead(repository, pullRequest, branch),
     );
-    if (!Array.isArray(value)) throw ggError('GitHub returned malformed pull-request data.');
-    return value.map(normalizePullRequest);
   }
 
   async create(repository: GitHubRepository, input: PullRequestInput): Promise<PullRequest> {
@@ -304,19 +361,23 @@ class GhClient implements GitHubClient {
 
   async listComments(
     repository: GitHubRepository,
-    pullRequest: PullRequest,
+    pullRequests: PullRequest[],
   ): Promise<IssueComment[]> {
     const comments: IssueComment[] = [];
-    for (let page = 1; ; page += 1) {
-      const value = this.api(
-        repository,
-        'GET',
-        `repos/${repository.owner}/${repository.name}/issues/${pullRequest.number}/comments?per_page=100&page=${page}`,
+    let pending = [...new Set(pullRequests.map(({ number }) => number))].map((number) => ({
+      number,
+      cursor: undefined as string | undefined,
+    }));
+    while (pending.length > 0) {
+      const query = issueCommentsQuery(repository, pending);
+      const pages = normalizeIssueCommentPages(
+        this.api(repository, 'POST', 'graphql', query),
+        pending,
       );
-      const batch = normalizeIssueComments(value);
-      comments.push(...batch);
-      if (batch.length < 100) return comments;
+      comments.push(...pages.comments);
+      pending = pages.pending;
     }
+    return comments;
   }
 
   async updateComment(
@@ -413,15 +474,25 @@ class TokenClient implements GitHubClient {
     await this.api(repository, 'GET', `repos/${repository.owner}/${repository.name}`);
   }
 
+  async listPullRequests(repository: GitHubRepository): Promise<PullRequest[]> {
+    const pullRequests: PullRequest[] = [];
+    for (let page = 1; ; page += 1) {
+      const value = await this.api(
+        repository,
+        'GET',
+        `repos/${repository.owner}/${repository.name}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(value)) throw ggError('GitHub returned malformed pull-request data.');
+      const batch = value.map(normalizePullRequest);
+      pullRequests.push(...batch);
+      if (batch.length < 100) return pullRequests;
+    }
+  }
+
   async listForHead(repository: GitHubRepository, branch: string): Promise<PullRequest[]> {
-    const head = encodeURIComponent(`${repository.headOwner}:${branch}`);
-    const value = await this.api(
-      repository,
-      'GET',
-      `repos/${repository.owner}/${repository.name}/pulls?state=all&head=${head}&sort=updated&direction=desc&per_page=100`,
+    return (await this.listPullRequests(repository)).filter((pullRequest) =>
+      matchesHead(repository, pullRequest, branch),
     );
-    if (!Array.isArray(value)) throw ggError('GitHub returned malformed pull-request data.');
-    return value.map(normalizePullRequest);
   }
 
   async create(repository: GitHubRepository, input: PullRequestInput): Promise<PullRequest> {
@@ -490,19 +561,23 @@ class TokenClient implements GitHubClient {
 
   async listComments(
     repository: GitHubRepository,
-    pullRequest: PullRequest,
+    pullRequests: PullRequest[],
   ): Promise<IssueComment[]> {
     const comments: IssueComment[] = [];
-    for (let page = 1; ; page += 1) {
-      const value = await this.api(
-        repository,
-        'GET',
-        `repos/${repository.owner}/${repository.name}/issues/${pullRequest.number}/comments?per_page=100&page=${page}`,
+    let pending = [...new Set(pullRequests.map(({ number }) => number))].map((number) => ({
+      number,
+      cursor: undefined as string | undefined,
+    }));
+    while (pending.length > 0) {
+      const query = issueCommentsQuery(repository, pending);
+      const pages = normalizeIssueCommentPages(
+        await this.api(repository, 'POST', 'graphql', query),
+        pending,
       );
-      const batch = normalizeIssueComments(value);
-      comments.push(...batch);
-      if (batch.length < 100) return comments;
+      comments.push(...pages.comments);
+      pending = pages.pending;
     }
+    return comments;
   }
 
   async updateComment(
@@ -614,6 +689,11 @@ function normalizePullRequest(value: any): PullRequest {
     state,
     draft: Boolean(value.draft),
     headRef: String(value.head?.ref ?? value.headRefName ?? ''),
+    headOwner: String(
+      value.head?.repo?.owner?.login ??
+        value.headOwner ??
+        String(value.head?.label ?? '').split(':')[0],
+    ),
     baseRef: String(value.base?.ref ?? value.baseRefName ?? ''),
     title: String(value.title ?? ''),
     body: String(value.body ?? ''),
@@ -626,12 +706,68 @@ function normalizePullRequest(value: any): PullRequest {
   };
 }
 
-function normalizeIssueComments(value: unknown): IssueComment[] {
-  if (!Array.isArray(value)) throw ggError('GitHub returned malformed issue-comment data.');
-  return value.map((comment: any) => ({
-    id: Number(comment.id),
-    body: String(comment.body ?? ''),
-  }));
+interface PendingCommentPage {
+  number: number;
+  cursor: string | undefined;
+}
+
+function issueCommentsQuery(
+  repository: GitHubRepository,
+  pending: PendingCommentPage[],
+): { query: string; variables: Record<string, string | null> } {
+  const cursorDefinitions = pending.map((_, index) => `$cursor${index}:String`).join(',');
+  const fields = pending
+    .map(
+      ({ number }, index) =>
+        `p${index}:pullRequest(number:${number}){comments(first:100,after:$cursor${index}){nodes{databaseId body}pageInfo{hasNextPage endCursor}}}`,
+    )
+    .join('');
+  return {
+    query: `query($owner:String!,$name:String!,${cursorDefinitions}){repository(owner:$owner,name:$name){${fields}}}`,
+    variables: Object.fromEntries([
+      ['owner', repository.owner],
+      ['name', repository.name],
+      ...pending.map(({ cursor }, index) => [`cursor${index}`, cursor ?? null] as const),
+    ]),
+  };
+}
+
+function normalizeIssueCommentPages(
+  value: any,
+  requested: PendingCommentPage[],
+): { comments: IssueComment[]; pending: PendingCommentPage[] } {
+  const repository = value?.data?.repository;
+  if (!repository || typeof repository !== 'object') {
+    throw ggError('GitHub returned malformed issue-comment data.');
+  }
+  const comments: IssueComment[] = [];
+  const pending: PendingCommentPage[] = [];
+  for (const [index, request] of requested.entries()) {
+    const connection = repository[`p${index}`]?.comments;
+    if (!connection || !Array.isArray(connection.nodes)) continue;
+    for (const comment of connection.nodes) {
+      comments.push({
+        id: Number(comment.databaseId),
+        body: String(comment.body ?? ''),
+        pullRequestNumber: request.number,
+      });
+    }
+    if (connection.pageInfo?.hasNextPage && connection.pageInfo.endCursor) {
+      pending.push({ number: request.number, cursor: String(connection.pageInfo.endCursor) });
+    }
+  }
+  return { comments, pending };
+}
+
+function matchesHead(
+  repository: GitHubRepository,
+  pullRequest: PullRequest,
+  branch: string,
+): boolean {
+  return (
+    pullRequest.headRef === branch &&
+    (!pullRequest.headOwner || pullRequest.headOwner === repository.headOwner)
+  );
 }
 
 function normalizeMergeResult(value: any, pullRequest: PullRequest): MergeResult {

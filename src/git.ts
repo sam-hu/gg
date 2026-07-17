@@ -63,17 +63,24 @@ export class Git {
   }
 
   static discover(cwd: string, debug = false): Git {
-    const rootResult = runProcess(cwd, ['rev-parse', '--show-toplevel'], { allowFailure: true });
+    const rootResult = runProcess(
+      cwd,
+      [
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--absolute-git-dir',
+        '--git-common-dir',
+      ],
+      { allowFailure: true },
+    );
     if (rootResult.status !== 0) {
       throw ggError('You must run this command from within a git repository.');
     }
-    const root = rootResult.stdout.trim();
-    const gitDir = runProcess(root, ['rev-parse', '--absolute-git-dir']).stdout.trim();
-    const commonValue = runProcess(root, [
-      'rev-parse',
-      '--path-format=absolute',
-      '--git-common-dir',
-    ]).stdout.trim();
+    const [root = '', gitDir = '', commonValue = ''] = rootResult.stdout.trim().split('\n');
+    if (!root || !gitDir || !commonValue) {
+      throw ggError('Could not determine Git repository paths.');
+    }
     return new Git(path.resolve(root), path.resolve(gitDir), path.resolve(commonValue), debug);
   }
 
@@ -105,6 +112,30 @@ export class Git {
       this.readCache = previousReadCache;
       this.branchHeadCache = previousBranchHeadCache;
     }
+  }
+
+  withRefSnapshot<T>(callback: () => T): T {
+    const previousBranchHeadCache = this.branchHeadCache;
+    this.branchHeadCache = this.loadBranchHeads();
+    try {
+      return callback();
+    } finally {
+      this.branchHeadCache = previousBranchHeadCache;
+    }
+  }
+
+  async withRefSnapshotAsync<T>(callback: () => Promise<T>): Promise<T> {
+    const previousBranchHeadCache = this.branchHeadCache;
+    this.branchHeadCache = this.loadBranchHeads();
+    try {
+      return await callback();
+    } finally {
+      this.branchHeadCache = previousBranchHeadCache;
+    }
+  }
+
+  localBranchHeads(): ReadonlyMap<string, string> {
+    return this.branchHeadCache ?? this.loadBranchHeads();
   }
 
   capture(args: string[], options: Omit<GitRunOptions, 'stdout' | 'stderr'> = {}): string {

@@ -93,8 +93,14 @@ describe('core stacked-branch workflow', () => {
 
       expectSuccess(gg(repo, ['bottom']));
       write(repo, 'a.txt', 'a2\n');
-      const created = gg(repo, ['cc', '--all', '-m', 'A followup']);
+      const created = gg(repo, ['--debug', 'cc', '--all', '-m', 'A followup']);
       expectSuccess(created);
+      expect(
+        created.stderr.match(
+          /git for-each-ref --format=%\(refname:short\)%00%\(objectname\) refs\/heads/g,
+        ),
+      ).toHaveLength(1);
+      expect(created.stderr).not.toContain('git show -s --format=%an%x00%ae%x00%aI%x00%B');
       expect(head(repo, 'b')).not.toBe(oldB);
       expect(head(repo, 'c')).not.toBe(oldC);
       const afterCreateB = head(repo, 'b');
@@ -326,6 +332,8 @@ describe('core stacked-branch workflow', () => {
       write(repo, 'feature.txt', 'second\n');
       expectSuccess(gg(repo, ['cc', '--all', '-m', 'second feature commit']));
 
+      const metadata = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
+      const dataVersionBefore = metadata.prepare('PRAGMA data_version').get();
       const log = gg(repo, ['l']);
       expectSuccess(log);
       const second = log.stdout.indexOf(' - second feature commit');
@@ -348,6 +356,8 @@ describe('core stacked-branch workflow', () => {
       expect(repeated.stderr).not.toContain('git show-ref');
       expect(repeated.stderr).not.toContain('git merge-base --is-ancestor');
       expect(repeated.stderr.match(/git for-each-ref/g)).toHaveLength(1);
+      expect(metadata.prepare('PRAGMA data_version').get()).toEqual(dataVersionBefore);
+      metadata.close();
     });
   });
 

@@ -15,57 +15,69 @@ export class StackGraph {
   }
 
   refresh(): { diverged: string[]; missing: string[] } {
+    return this.validateRows(true);
+  }
+
+  validate(): { diverged: string[]; missing: string[] } {
+    return this.validateRows(false);
+  }
+
+  private validateRows(persist: boolean): { diverged: string[]; missing: string[] } {
     const diverged: string[] = [];
     const missing: string[] = [];
-    this.store.transaction(() => {
-      for (const row of this.rows.values()) {
-        const previousHead = row.branchRevision;
-        const head = this.git.tryHead(row.branchName);
-        if (!head) {
-          row.validationResult = 'BAD_PARENT_NAME';
-          missing.push(row.branchName);
-          this.store.put(row);
-          continue;
-        }
-        row.branchRevision = head;
-        if (row.branchName === this.trunk) {
-          row.validationResult = 'TRUNK';
-          row.parentHeadRevision = null;
-          this.store.put(row);
-          continue;
-        }
-        const parentHead = row.parentBranchName
-          ? this.git.tryHead(row.parentBranchName)
-          : undefined;
-        if (!row.parentBranchName || !parentHead) {
-          row.validationResult = 'BAD_PARENT_NAME';
-          diverged.push(row.branchName);
-          this.store.put(row);
-          continue;
-        }
-        // Commits are immutable: if a previously valid branch still points to
-        // the same commit, its recorded parent revision is still its ancestor.
-        if (
-          row.validationResult !== 'VALID' ||
-          previousHead !== head ||
-          !row.parentBranchRevision
-        ) {
-          if (
-            !row.parentBranchRevision ||
-            !this.git.tryHead(row.parentBranchRevision) ||
-            !this.git.isAncestor(row.parentBranchRevision, row.branchName)
-          ) {
-            row.validationResult = 'BAD_PARENT_REVISION';
-            diverged.push(row.branchName);
-            this.store.put(row);
-            continue;
-          }
-        }
-        row.parentHeadRevision = parentHead;
-        row.validationResult = 'VALID';
-        this.store.put(row);
+    const changed: BranchMetadata[] = [];
+    const branchHeads = this.git.localBranchHeads();
+    for (const row of this.rows.values()) {
+      const before = JSON.stringify(row);
+      const previousHead = row.branchRevision;
+      const head = branchHeads.get(row.branchName);
+      if (!head) {
+        row.validationResult = 'BAD_PARENT_NAME';
+        missing.push(row.branchName);
+        if (JSON.stringify(row) !== before) changed.push(row);
+        continue;
       }
-    });
+      row.branchRevision = head;
+      if (row.branchName === this.trunk) {
+        row.validationResult = 'TRUNK';
+        row.parentHeadRevision = null;
+        if (JSON.stringify(row) !== before) changed.push(row);
+        continue;
+      }
+      const parentHead = row.parentBranchName ? branchHeads.get(row.parentBranchName) : undefined;
+      if (!row.parentBranchName || !parentHead) {
+        row.validationResult = 'BAD_PARENT_NAME';
+        diverged.push(row.branchName);
+        if (JSON.stringify(row) !== before) changed.push(row);
+        continue;
+      }
+      // Commits are immutable: if a previously valid branch still points to
+      // the same commit, its recorded parent revision is still its ancestor.
+      if (row.validationResult === 'BAD_PARENT_REVISION' && (!persist || previousHead === head)) {
+        diverged.push(row.branchName);
+        continue;
+      }
+      if (persist && (previousHead !== head || !row.parentBranchRevision)) {
+        if (
+          !row.parentBranchRevision ||
+          !this.git.tryHead(row.parentBranchRevision) ||
+          !this.git.isAncestor(row.parentBranchRevision, row.branchName)
+        ) {
+          row.validationResult = 'BAD_PARENT_REVISION';
+          diverged.push(row.branchName);
+          if (JSON.stringify(row) !== before) changed.push(row);
+          continue;
+        }
+      }
+      row.parentHeadRevision = parentHead;
+      row.validationResult = 'VALID';
+      if (JSON.stringify(row) !== before) changed.push(row);
+    }
+    if (persist && changed.length > 0) {
+      this.store.transaction(() => {
+        for (const row of changed) this.store.put(row);
+      });
+    }
     return { diverged, missing };
   }
 
