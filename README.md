@@ -5,7 +5,7 @@
 The supported workflow is:
 
 ```text
-init -> branch create -> commit/amend -> restack -> move -> sync -> submit
+init -> branch create/track -> commit/amend -> restack -> move -> sync -> submit
 ```
 
 `gg` is intentionally local-first. Git operations use your existing Git credentials. Pull-request operations prefer an authenticated `gh` CLI and fall back to `GITHUB_TOKEN`. The tool has no account, hosted service, telemetry, or Graphite backend dependency.
@@ -46,6 +46,15 @@ gg down
 gg up
 gg submit --stack
 ```
+
+To attach a branch that was created with Git or another tool, check it out and select its tracked parent:
+
+```sh
+git switch my-existing-branch
+gg track --parent main
+```
+
+You can also track a branch without checking it out with `gg track my-existing-branch --parent main`. If `--parent` is omitted in an interactive terminal, `gg` prompts with the tracked branch tree.
 
 The short aliases are available too:
 

@@ -92,7 +92,7 @@ Their timestamps are the current ISO UTC time when the row is first created. The
 
 - `branch_name`: local branch name and primary key.
 - `parent_branch_name`: durable direct parent, or `NULL` for trunk.
-- `parent_branch_revision`: base commit on which this branch's commits currently sit.
+- `parent_branch_revision`: base commit on which this branch's commits currently sit. `gg track` initializes it to the selected branches' merge base.
 - `parent_head_revision`: the parent's head at the last metadata refresh.
 - `branch_revision`: current local branch tip at the last refresh.
 - `children`: JSON array preserving creation/append order.

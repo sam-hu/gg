@@ -129,7 +129,7 @@ function renderDefaultGraph(
       visit(child, `${prefix}${'│  '.repeat(index)}`);
     }
     if (children.length > 1) {
-      lines.push(chalk.gray(`${prefix}├──${'┴──'.repeat(children.length - 2)}┘`));
+      lines.push(chalk.white(`${prefix}├──${'┴──'.repeat(children.length - 2)}┘`));
     }
     if (visible.has(branch)) renderDefaultBranch(context, graph, branch, current, prefix, lines);
   };
@@ -146,22 +146,22 @@ function renderDefaultBranch(
 ): void {
   const revision = context.git.tryHead(branch);
   lines.push(
-    `${chalk.gray(prefix)}${branchMarker(branch, current)} ${branchLabel(branch, current)}${statusSuffix(context, graph, branch)}`,
+    `${chalk.white(prefix)}${branchMarker(branch, current)} ${branchLabel(branch, current)}${statusSuffix(context, graph, branch)}`,
   );
   if (!revision) return;
   const parent = graph.parent(branch);
   if (parent && revision === context.git.tryHead(parent)) {
-    lines.push(chalk.gray(`${prefix}│ `));
-    lines.push(chalk.gray(`${prefix}│ `));
-    lines.push(chalk.gray(`${prefix}│`));
+    lines.push(chalk.white(`${prefix}│ `));
+    lines.push(chalk.white(`${prefix}│ `));
+    lines.push(chalk.white(`${prefix}│`));
     return;
   }
   const age = context.git.capture(['show', '-s', '--format=%cr', branch]);
   const subject = context.git.capture(['show', '-s', '--format=%s', branch]);
-  lines.push(chalk.gray(`${prefix}│ ${age}`));
-  lines.push(chalk.gray(`${prefix}│ `));
-  lines.push(chalk.gray(`${prefix}│ ${revision.slice(0, 7)} - ${subject}`));
-  lines.push(chalk.gray(`${prefix}│`));
+  lines.push(`${chalk.white(`${prefix}│ `)}${chalk.gray(age)}`);
+  lines.push(chalk.white(`${prefix}│ `));
+  lines.push(`${chalk.white(`${prefix}│ `)}${chalk.gray(`${revision.slice(0, 7)} - ${subject}`)}`);
+  lines.push(chalk.white(`${prefix}│`));
 }
 
 function renderLong(context: RepositoryContext, lines: string[]): void {
@@ -192,11 +192,11 @@ function renderClassic(context: RepositoryContext, graph: StackGraph, lines: str
 }
 
 function branchMarker(branch: string, current: string | undefined): string {
-  return branch === current ? chalk.cyan('◉') : chalk.gray('◯');
+  return branch === current ? chalk.cyan('◉') : chalk.white('◯');
 }
 
 function branchLabel(branch: string, current: string | undefined): string {
-  return branch === current ? chalk.cyan(`${branch} (current)`) : chalk.blue(branch);
+  return branch === current ? chalk.cyan(`${branch} (current)`) : chalk.blueBright(branch);
 }
 
 function statusSuffix(context: RepositoryContext, graph: StackGraph, branch: string): string {

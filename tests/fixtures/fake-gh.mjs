@@ -47,6 +47,9 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
   output = (state.prs ?? []).filter((pr) => pr.head.ref === head);
 } else if (method === 'GET' && endpoint?.endsWith('/reviews')) {
   output = state.reviews ?? [];
+} else if (method === 'GET' && endpoint?.includes('/issues/') && endpoint.includes('/comments?')) {
+  const number = Number(endpoint.split('/issues/')[1].split('/')[0]);
+  output = (state.comments ?? []).filter((comment) => comment.pullRequestNumber === number);
 } else if (method === 'POST' && endpoint?.endsWith('/pulls')) {
   const number = state.nextNumber ?? 101;
   state.nextNumber = number + 1;
@@ -83,8 +86,22 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
   output = pr;
 } else if (method === 'POST' && endpoint?.includes('/issues/') && endpoint.endsWith('/comments')) {
   state.comments ??= [];
-  state.comments.push({ endpoint, body: body.body });
-  output = { id: state.comments.length };
+  const number = Number(endpoint.split('/issues/')[1].split('/')[0]);
+  const comment = {
+    id: state.nextCommentId ?? 1,
+    pullRequestNumber: number,
+    endpoint,
+    body: body.body,
+  };
+  state.nextCommentId = comment.id + 1;
+  state.comments.push(comment);
+  output = comment;
+} else if (method === 'PATCH' && endpoint?.includes('/issues/comments/')) {
+  const id = Number(endpoint.split('/').at(-1));
+  const comment = state.comments?.find((candidate) => candidate.id === id);
+  if (!comment) process.exit(1);
+  comment.body = body.body;
+  output = comment;
 } else if (endpoint === 'graphql') {
   const valid = (state.prs ?? []).some((pr) => pr.node_id === body?.variables?.id);
   output = valid ? { data: {} } : { errors: [{ message: 'invalid node id' }] };

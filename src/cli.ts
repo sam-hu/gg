@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { Command } from 'commander';
-import { createBranch, type BranchCreateOptions } from './commands/branch.js';
+import {
+  createBranch,
+  trackBranch,
+  type BranchCreateOptions,
+  type TrackOptions,
+} from './commands/branch.js';
 import { amendCommit, createCommit, type CommitOptions } from './commands/commit.js';
 import { showLog, type LogOptions } from './commands/log.js';
 import {
@@ -56,6 +61,14 @@ program
 const branch = program.command('branch').description('manage tracked branches');
 configureBranchCreate(branch.command('create [name]').description('create a tracked child branch'));
 configureBranchCreate(program.command('bc [name]').description('alias for branch create'));
+
+program
+  .command('track [branch]')
+  .description('start tracking an existing branch')
+  .option('-p, --parent <branch>', "tracked branch's parent")
+  .action(async (branchName: string | undefined, options: TrackOptions) =>
+    withContext((context) => trackBranch(context, branchName, options)),
+  );
 
 const commit = program.command('commit').description('create or amend commits in a stack');
 configureCommitCreate(

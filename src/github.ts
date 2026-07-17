@@ -35,6 +35,11 @@ export interface PullRequestInput {
   draft: boolean;
 }
 
+export interface IssueComment {
+  id: number;
+  body: string;
+}
+
 export interface GitHubClient {
   preflight(repository: GitHubRepository): Promise<void>;
   listForHead(repository: GitHubRepository, branch: string): Promise<PullRequest[]>;
@@ -51,7 +56,9 @@ export interface GitHubClient {
     reviewers: string[],
     teams: string[],
   ): Promise<void>;
+  listComments(repository: GitHubRepository, pullRequest: PullRequest): Promise<IssueComment[]>;
   comment(repository: GitHubRepository, pullRequest: PullRequest, body: string): Promise<void>;
+  updateComment(repository: GitHubRepository, comment: IssueComment, body: string): Promise<void>;
   enableAutoMerge(repository: GitHubRepository, pullRequest: PullRequest): Promise<void>;
   reviewersForRerequest(repository: GitHubRepository, pullRequest: PullRequest): Promise<string[]>;
 }
@@ -286,6 +293,36 @@ class GhClient implements GitHubClient {
     );
   }
 
+  async listComments(
+    repository: GitHubRepository,
+    pullRequest: PullRequest,
+  ): Promise<IssueComment[]> {
+    const comments: IssueComment[] = [];
+    for (let page = 1; ; page += 1) {
+      const value = this.api(
+        repository,
+        'GET',
+        `repos/${repository.owner}/${repository.name}/issues/${pullRequest.number}/comments?per_page=100&page=${page}`,
+      );
+      const batch = normalizeIssueComments(value);
+      comments.push(...batch);
+      if (batch.length < 100) return comments;
+    }
+  }
+
+  async updateComment(
+    repository: GitHubRepository,
+    comment: IssueComment,
+    body: string,
+  ): Promise<void> {
+    this.api(
+      repository,
+      'PATCH',
+      `repos/${repository.owner}/${repository.name}/issues/comments/${comment.id}`,
+      { body },
+    );
+  }
+
   async enableAutoMerge(repository: GitHubRepository, pullRequest: PullRequest): Promise<void> {
     requireNodeId(pullRequest);
     this.api(repository, 'POST', 'graphql', {
@@ -426,6 +463,36 @@ class TokenClient implements GitHubClient {
     );
   }
 
+  async listComments(
+    repository: GitHubRepository,
+    pullRequest: PullRequest,
+  ): Promise<IssueComment[]> {
+    const comments: IssueComment[] = [];
+    for (let page = 1; ; page += 1) {
+      const value = await this.api(
+        repository,
+        'GET',
+        `repos/${repository.owner}/${repository.name}/issues/${pullRequest.number}/comments?per_page=100&page=${page}`,
+      );
+      const batch = normalizeIssueComments(value);
+      comments.push(...batch);
+      if (batch.length < 100) return comments;
+    }
+  }
+
+  async updateComment(
+    repository: GitHubRepository,
+    comment: IssueComment,
+    body: string,
+  ): Promise<void> {
+    await this.api(
+      repository,
+      'PATCH',
+      `repos/${repository.owner}/${repository.name}/issues/comments/${comment.id}`,
+      { body },
+    );
+  }
+
   async enableAutoMerge(repository: GitHubRepository, pullRequest: PullRequest): Promise<void> {
     requireNodeId(pullRequest);
     await this.api(repository, 'POST', 'graphql', {
@@ -516,6 +583,14 @@ function normalizePullRequest(value: any): PullRequest {
       ? value.requested_teams.map((team: any) => String(team.slug)).filter(Boolean)
       : [],
   };
+}
+
+function normalizeIssueComments(value: unknown): IssueComment[] {
+  if (!Array.isArray(value)) throw ggError('GitHub returned malformed issue-comment data.');
+  return value.map((comment: any) => ({
+    id: Number(comment.id),
+    body: String(comment.body ?? ''),
+  }));
 }
 
 function normalizeHost(host: string): string {

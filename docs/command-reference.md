@@ -23,6 +23,14 @@ Flags: `-m/--message`, `-a/--all`, `-u/--update`, `-p/--patch`, `-i/--insert`, `
 
 The current branch is the parent unless `--onto` is supplied. With no staged changes, non-interactive mode creates an empty branch at the exact parent commit, matching the observed Graphite behavior.
 
+## Track an existing branch
+
+```text
+gg track [branch] [-p|--parent <branch>]
+```
+
+The current branch is tracked when `branch` is omitted. The parent must already be tracked by `gg`. Without `--parent`, an interactive tracked-branch selector is shown; non-interactive use requires the flag. Tracking records the merge base between the branch and its parent, so a branch created before its parent advanced can be safely restacked afterward. Running `track` again repairs or changes the branch's metadata without checking out or rewriting the branch. Self-parenting, metadata cycles, missing branches, unrelated histories, and placing the trunk beneath another branch are rejected.
+
 ## Navigate
 
 ```text
@@ -117,3 +125,5 @@ Default scope is the current branch plus downstack ancestors. `--stack` includes
 - `-v/--view` and `-w/--web` (print browser instructions; they do not launch a browser)
 
 New non-interactive PRs default to draft. Each PR targets its immediate parent; the bottom branch targets trunk or `--target-trunk`. Fork workflows use the trunk's fetch remote for the base repository and Git's branch `pushRemote`/`remote.pushDefault`/branch remote precedence plus `pushurl` for the head repository.
+
+PR descriptions are left available for human-authored content. Stack metadata is maintained in a dedicated PR comment containing a linked list of every open PR in that connected stack; the current PR is bolded. Each successful submission updates these comments in place across all tracked stacks, so upstack additions and moves are reflected on every affected PR.

@@ -147,19 +147,41 @@ describe('GitHub submission through an offline fake gh', () => {
         ['a', 'main'],
         ['b', 'a'],
       ]);
+      expect(afterFirst.prs.every((pr: any) => pr.body === '')).toBe(true);
       expect(afterFirst.prs.every((pr: any) => pr.draft)).toBe(true);
+      expect(afterFirst.comments).toHaveLength(2);
+      const aStackComment = afterFirst.comments.find(
+        (comment: any) => comment.pullRequestNumber === 101,
+      ).body;
+      const bStackComment = afterFirst.comments.find(
+        (comment: any) => comment.pullRequestNumber === 102,
+      ).body;
+      expect(aStackComment).toContain('- main\n- **[#101 A title]');
+      expect(aStackComment).toContain(
+        '- **[#101 A title](https://github.com/owner/repo/pull/101)** 👈 (This PR)',
+      );
+      expect(aStackComment).toContain('- [#102 B title](https://github.com/owner/repo/pull/102)');
+      expect(aStackComment).not.toContain("The bolded pull request is the one you're viewing.");
+      expect(bStackComment).toContain('- [#101 A title](https://github.com/owner/repo/pull/101)');
+      expect(bStackComment).toContain(
+        '- **[#102 B title](https://github.com/owner/repo/pull/102)** 👈 (This PR)',
+      );
       expect(gg(repo, ['log', 'short']).stdout).toContain('submitted');
 
       const second = gg(repo, ['submit', '--stack'], env);
       expectSuccess(second);
       expect(stateFrom(env).prs).toHaveLength(2);
+      expect(stateFrom(env).comments).toHaveLength(2);
 
       const changed = stateFrom(env);
+      changed.prs[0].body = 'Stacked branch: `a`\n\nBase: `main`\n\nHuman-authored notes.';
+      changed.prs[1].body = 'Stacked branch: `b`\n\nBase: `a`';
       changed.prs[1].base.ref = 'main';
       const statePath = env.GG_FAKE_GH_STATE!;
       writeFileSync(statePath, JSON.stringify(changed, null, 2));
       expectSuccess(gg(repo, ['submit', '--stack'], env));
       expect(stateFrom(env).prs[1].base.ref).toBe('a');
+      expect(stateFrom(env).prs.map((pr: any) => pr.body)).toEqual(['Human-authored notes.', '']);
 
       expectSuccess(
         gg(
@@ -185,7 +207,10 @@ describe('GitHub submission through an offline fake gh', () => {
         'bob',
       ]);
       expect(advanced.prs[0].requested_teams.map((team: any) => team.slug)).toEqual(['core']);
-      expect(advanced.comments).toHaveLength(2);
+      expect(
+        advanced.comments.filter((comment: any) => comment.body.includes('gg-stack-comment')),
+      ).toHaveLength(2);
+      expect(advanced.comments.filter((comment: any) => comment.body === 'ready')).toHaveLength(2);
       expect(
         advanced.calls.filter(
           (call: any) => call.endpoint === 'graphql' && call.body.query.includes('AutoMerge'),
@@ -194,6 +219,81 @@ describe('GitHub submission through an offline fake gh', () => {
 
       expectSuccess(git(repo, 'commit', '-q', '--allow-empty', '-m', 'post-submit change'));
       expect(gg(repo, ['log', 'short']).stdout).toContain('changed since submit');
+    });
+  });
+
+  test('refreshes every affected stack comment after upstack additions and moves', async () => {
+    await withTempRoot('submit-stack-comments', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+
+      write(repo, 'a.txt', 'a\n');
+      expectSuccess(gg(repo, ['bc', 'a', '--all', '-m', 'A title']));
+      write(repo, 'b.txt', 'b\n');
+      expectSuccess(gg(repo, ['bc', 'b', '--all', '-m', 'B title']));
+      expectSuccess(gg(repo, ['bottom']));
+
+      const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 1 });
+      expectSuccess(gg(repo, ['submit', '--stack'], env));
+
+      expectSuccess(git(repo, 'switch', '-q', 'main'));
+      write(repo, 'x.txt', 'x\n');
+      expectSuccess(gg(repo, ['bc', 'x', '--all', '-m', 'X title']));
+      expectSuccess(gg(repo, ['submit'], env));
+
+      expectSuccess(git(repo, 'switch', '-q', 'b'));
+      write(repo, 'c.txt', 'c\n');
+      expectSuccess(gg(repo, ['bc', 'c', '--all', '-m', 'C title']));
+      expectSuccess(gg(repo, ['submit'], env));
+
+      const afterAddition = stateFrom(env);
+      expect(afterAddition.comments).toHaveLength(4);
+      for (const number of [1, 2, 4]) {
+        const comment = afterAddition.comments.find(
+          (candidate: any) => candidate.pullRequestNumber === number,
+        );
+        expect(comment.body).toContain('[#1 A title](https://github.com/owner/repo/pull/1)');
+        expect(comment.body).toContain('[#2 B title](https://github.com/owner/repo/pull/2)');
+        expect(comment.body).toContain('[#4 C title](https://github.com/owner/repo/pull/4)');
+      }
+
+      const damaged = stateFrom(env);
+      damaged.comments.find((comment: any) => comment.pullRequestNumber === 2).body =
+        '<!-- gg-stack-comment -->\nstale';
+      damaged.comments = damaged.comments.filter((comment: any) => comment.pullRequestNumber !== 4);
+      writeFileSync(env.GG_FAKE_GH_STATE!, JSON.stringify(damaged, null, 2));
+      expectSuccess(git(repo, 'commit', '-q', '--allow-empty', '-m', 'Update C'));
+      expectSuccess(gg(repo, ['submit'], env));
+
+      const healed = stateFrom(env);
+      expect(healed.comments).toHaveLength(4);
+      expect(
+        healed.comments.find((comment: any) => comment.pullRequestNumber === 2).body,
+      ).toContain('[#4 Update C](https://github.com/owner/repo/pull/4)');
+      expect(
+        healed.comments.find((comment: any) => comment.pullRequestNumber === 4).body,
+      ).toContain('- **[#4 Update C](https://github.com/owner/repo/pull/4)**');
+
+      expectSuccess(gg(repo, ['move', '--source', 'b', '--onto', 'x']));
+      expectSuccess(gg(repo, ['submit', '--branch', 'b', '--stack', '--force'], env));
+
+      const afterMove = stateFrom(env);
+      expect(afterMove.comments).toHaveLength(4);
+      const aComment = afterMove.comments.find(
+        (comment: any) => comment.pullRequestNumber === 1,
+      ).body;
+      expect(aComment).toContain('- **[#1 A title](https://github.com/owner/repo/pull/1)**');
+      expect(aComment).not.toContain('#2 B title');
+      for (const number of [2, 3, 4]) {
+        const comment = afterMove.comments.find(
+          (candidate: any) => candidate.pullRequestNumber === number,
+        );
+        expect(comment.body).toContain('[#3 X title](https://github.com/owner/repo/pull/3)');
+        expect(comment.body).toContain('[#2 B title](https://github.com/owner/repo/pull/2)');
+        expect(comment.body).toContain('[#4 Update C](https://github.com/owner/repo/pull/4)');
+      }
     });
   });
 

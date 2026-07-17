@@ -63,7 +63,7 @@ export class StackGraph {
     const row = this.get(branch);
     if (!row) {
       throw ggError(
-        `Cannot perform this operation on untracked branch ${branch}.\nCreate or retrack it with gg branch create.`,
+        `Cannot perform this operation on untracked branch ${branch}.\nCreate it with gg branch create or track it with gg track.`,
       );
     }
     return row;
