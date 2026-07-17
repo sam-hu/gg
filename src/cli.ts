@@ -168,7 +168,7 @@ program
 
 program
   .command('merge')
-  .description('merge the bottom pull request and restack the remaining branches')
+  .description('merge the bottom pull request, restack, and submit the remaining branches')
   .action(async () => withContext(mergeBottomBranch));
 
 program
