@@ -377,7 +377,7 @@ function formatStackComment(
     }),
     `- ${trunk}`,
   ];
-  return `${STACK_COMMENT_MARKER}\n### This pull request is part of the following stack\n\n${rows.join('\n')}\n\n<sub>This stack was generated using [gg](https://github.com/sam-hu/gg)</sub>`;
+  return `${STACK_COMMENT_MARKER}\n### This pull request is part of a stack:\n\n${rows.join('\n')}\n\n<sub>This stack was generated using [gg](https://github.com/sam-hu/gg)</sub>`;
 }
 
 function escapeMarkdownLinkText(value: string): string {
