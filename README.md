@@ -1,3 +1,4 @@
+TEST DO NOT COMMIT
 # gg
 
 `gg` is a local, GitHub-native stacked-branch CLI. It implements a stacked-branch workflow using its own `.gg_*` repository metadata namespace.
