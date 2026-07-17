@@ -7,6 +7,13 @@ import { selectWithEscape } from '../prompts.js';
 
 export async function checkoutBranch(context: RepositoryContext, branch?: string): Promise<void> {
   await context.ensureInitialized();
+  return context.git.withRefSnapshotAsync(() => checkoutBranchFromSnapshot(context, branch));
+}
+
+async function checkoutBranchFromSnapshot(
+  context: RepositoryContext,
+  branch?: string,
+): Promise<void> {
   const graph = new StackGraph(context.git, context.store);
   let target = branch;
   if (!target) {
@@ -42,6 +49,14 @@ export async function navigateUp(
   to?: string,
 ): Promise<void> {
   await context.ensureInitialized();
+  return context.git.withRefSnapshotAsync(() => navigateUpFromSnapshot(context, stepsValue, to));
+}
+
+async function navigateUpFromSnapshot(
+  context: RepositoryContext,
+  stepsValue: string | number | undefined,
+  to?: string,
+): Promise<void> {
   const graph = new StackGraph(context.git, context.store);
   const current = context.git.branch();
   graph.require(current);
@@ -78,6 +93,13 @@ export async function navigateDown(
   stepsValue: string | number | undefined,
 ): Promise<void> {
   await context.ensureInitialized();
+  return context.git.withRefSnapshotAsync(() => navigateDownFromSnapshot(context, stepsValue));
+}
+
+async function navigateDownFromSnapshot(
+  context: RepositoryContext,
+  stepsValue: string | number | undefined,
+): Promise<void> {
   const graph = new StackGraph(context.git, context.store);
   const current = context.git.branch();
   graph.require(current);
@@ -99,6 +121,10 @@ export async function navigateDown(
 
 export async function navigateTop(context: RepositoryContext): Promise<void> {
   await context.ensureInitialized();
+  return context.git.withRefSnapshotAsync(() => navigateTopFromSnapshot(context));
+}
+
+async function navigateTopFromSnapshot(context: RepositoryContext): Promise<void> {
   const graph = new StackGraph(context.git, context.store);
   const current = context.git.branch();
   graph.require(current);
@@ -110,6 +136,10 @@ export async function navigateTop(context: RepositoryContext): Promise<void> {
 
 export async function navigateBottom(context: RepositoryContext): Promise<void> {
   await context.ensureInitialized();
+  return context.git.withRefSnapshotAsync(() => navigateBottomFromSnapshot(context));
+}
+
+async function navigateBottomFromSnapshot(context: RepositoryContext): Promise<void> {
   const graph = new StackGraph(context.git, context.store);
   const current = context.git.branch();
   graph.require(current);

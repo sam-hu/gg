@@ -109,6 +109,11 @@ describe('sync', () => {
         ],
       });
       expectSuccess(gg(repo, ['sync', '--delete-all'], env));
+      expect(
+        stateFrom(env).calls.filter(
+          (call: any) => call.method === 'GET' && String(call.endpoint).includes('/pulls?'),
+        ),
+      ).toHaveLength(1);
       expect(head(repo, 'main')).toBe(aHead);
       expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/a').status).toBe(1);
       const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
@@ -156,8 +161,10 @@ describe('GitHub submission through an offline fake gh', () => {
       expectSuccess(gg(repo, ['bottom']));
 
       const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 101 });
-      const first = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
+      const first = gg(repo, ['--debug', 'submit', '--stack'], { ...env, FORCE_COLOR: '1' });
       expectSuccess(first);
+      expect(first.stderr.match(/\[debug\] git ls-remote --heads/g)).toHaveLength(2);
+      expect(first.stderr.match(/\[debug\] git push /g)).toHaveLength(1);
       expect(stripVTControlCharacters(first.stdout)).toContain(
         [
           'Submitting 2 branches',
@@ -174,6 +181,19 @@ describe('GitHub submission through an offline fake gh', () => {
       expect(first.stdout).toContain('\u001b[4m');
       expect(first.stdout).toContain('\u001b[32m(created)\u001b[39m');
       const afterFirst = stateFrom(env);
+      expect(
+        afterFirst.calls.filter(
+          (call: any) => call.method === 'GET' && String(call.endpoint).includes('/pulls?'),
+        ),
+      ).toHaveLength(1);
+      expect(
+        afterFirst.calls.filter(
+          (call: any) =>
+            call.method === 'POST' &&
+            call.endpoint === 'graphql' &&
+            String(call.body?.query).includes('comments(first:100'),
+        ),
+      ).toHaveLength(1);
       expect(afterFirst.prs).toHaveLength(2);
       expect(afterFirst.prs.map((pr: any) => [pr.head.ref, pr.base.ref])).toEqual([
         ['a', 'main'],
@@ -218,6 +238,7 @@ describe('GitHub submission through an offline fake gh', () => {
       write(repo, 'b.txt', 'b updated\n');
       expectSuccess(git(repo, 'add', 'b.txt'));
       expectSuccess(git(repo, 'commit', '-q', '-m', 'B title'));
+      const callsBeforeChangedTop = stateFrom(env).calls.length;
       const changedTop = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
       expectSuccess(changedTop);
       expect(stripVTControlCharacters(changedTop.stdout)).toContain(
@@ -228,6 +249,14 @@ describe('GitHub submission through an offline fake gh', () => {
       );
       expect(changedTop.stdout).toContain('\u001b[2m(unchanged)\u001b[22m');
       expect(changedTop.stdout).toContain('\u001b[33m(updated)\u001b[39m');
+      expect(
+        stateFrom(env)
+          .calls.slice(callsBeforeChangedTop)
+          .filter(
+            (call: any) =>
+              call.method === 'PATCH' && String(call.endpoint).includes('/issues/comments/'),
+          ),
+      ).toHaveLength(0);
 
       const changed = stateFrom(env);
       changed.prs[0].body = 'Stacked branch: `a`\n\nBase: `main`\n\nHuman-authored notes.';
@@ -464,11 +493,11 @@ describe('GitHub submission through an offline fake gh', () => {
       const state = stateFrom(env);
       expect(state.prs).toHaveLength(1);
       expect(
-        state.calls.some(
+        state.calls.filter(
           (call: any) =>
-            call.method === 'GET' && String(call.endpoint).includes('head=fork%3Afork-branch'),
+            call.method === 'GET' && String(call.endpoint).includes('/pulls?state=all'),
         ),
-      ).toBe(true);
+      ).toHaveLength(1);
     });
   });
 });

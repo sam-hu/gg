@@ -28,9 +28,8 @@ function renderLog(
   options: LogOptions,
 ): void {
   const lines: string[] = [];
-  let graph = new StackGraph(context.git, context.store);
-  const validation = graph.refresh();
-  graph = new StackGraph(context.git, context.store);
+  const graph = new StackGraph(context.git, context.store);
+  const validation = graph.validate();
   const current = currentBranchForLog(context);
   if (style === 'long') {
     renderLong(context, lines);

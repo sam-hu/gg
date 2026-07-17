@@ -45,7 +45,7 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
 } else if (method === 'GET' && endpoint?.includes('/pulls?')) {
   const url = new URL(`https://fake.invalid/${endpoint}`);
   const head = url.searchParams.get('head')?.split(':').slice(1).join(':');
-  output = (state.prs ?? []).filter((pr) => pr.head.ref === head);
+  output = head ? (state.prs ?? []).filter((pr) => pr.head.ref === head) : (state.prs ?? []);
 } else if (method === 'GET' && endpoint?.endsWith('/reviews')) {
   output = state.reviews ?? [];
 } else if (method === 'GET' && endpoint?.includes('/issues/') && endpoint.includes('/comments?')) {
@@ -131,8 +131,24 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
     output = { merged: true, sha };
   }
 } else if (endpoint === 'graphql') {
-  const valid = (state.prs ?? []).some((pr) => pr.node_id === body?.variables?.id);
-  output = valid ? { data: {} } : { errors: [{ message: 'invalid node id' }] };
+  if (body?.query?.includes('comments(first:100')) {
+    const repository = {};
+    for (const match of body.query.matchAll(/(p\d+):pullRequest\(number:(\d+)\)/g)) {
+      const number = Number(match[2]);
+      repository[match[1]] = {
+        comments: {
+          nodes: (state.comments ?? [])
+            .filter((comment) => comment.pullRequestNumber === number)
+            .map((comment) => ({ databaseId: comment.id, body: comment.body })),
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      };
+    }
+    output = { data: { repository } };
+  } else {
+    const valid = (state.prs ?? []).some((pr) => pr.node_id === body?.variables?.id);
+    output = valid ? { data: {} } : { errors: [{ message: 'invalid node id' }] };
+  }
 } else {
   process.stderr.write(`unsupported fake gh API call: ${method} ${endpoint}\n`);
   process.exit(2);

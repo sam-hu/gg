@@ -76,8 +76,11 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
     context.requireInteractive();
   }
 
-  const initialBranches = submitScope(graph, anchor, options.stack ?? false);
-  if (canSkipUnchangedSubmit(git, graph, initialBranches, options)) {
+  const unchanged = git.withRefSnapshot(() => {
+    const branches = submitScope(graph, anchor, options.stack ?? false);
+    return canSkipUnchangedSubmit(git, graph, branches, options);
+  });
+  if (unchanged) {
     output.line('Stack is unchanged since the last submit.');
     return;
   }
@@ -104,6 +107,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   }
   const client = await authenticatedGitHubClient(repository);
   validateRemoteTrunk(context, repository, graph.trunk, options);
+  const pullRequestInventory = await client.listPullRequests(repository);
 
   const validation = graph.refresh();
   const invalidBranches = new Set([...validation.diverged, ...validation.missing]);
@@ -118,7 +122,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
     }
   }
 
-  const branches = submitScope(graph, anchor, options.stack ?? false);
+  const branches = git.withRefSnapshot(() => submitScope(graph, anchor, options.stack ?? false));
   const invalidInScope = branches.filter((branch) => invalidBranches.has(branch));
   if (invalidInScope.length > 0) {
     throw ggError(
@@ -136,7 +140,12 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
 
   const plan: SubmitPlanItem[] = [];
   for (const branch of branches) {
-    const open = (await client.listForHead(repository, branch)).filter((pr) => pr.state === 'OPEN');
+    const open = pullRequestInventory.filter(
+      (pullRequest) =>
+        pullRequest.state === 'OPEN' &&
+        pullRequest.headRef === branch &&
+        (!pullRequest.headOwner || pullRequest.headOwner === repository.headOwner),
+    );
     if (open.length > 1) {
       throw ggError(
         `Multiple open pull requests exist for ${branch}:\n${open.map((pr) => `${pr.number}: ${pr.url}`).join('\n')}`,
@@ -183,12 +192,27 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
 
   const urls: string[] = [];
   const pullRequestsByBranch = new Map<string, PullRequest>();
+  for (const pullRequest of pullRequestInventory) {
+    if (
+      pullRequest.state === 'OPEN' &&
+      graph.get(pullRequest.headRef) &&
+      (!pullRequest.headOwner || pullRequest.headOwner === repository.headOwner)
+    ) {
+      const existing = pullRequestsByBranch.get(pullRequest.headRef);
+      if (existing) {
+        throw ggError(
+          `Multiple open pull requests exist for ${pullRequest.headRef}:\n${existing.number}: ${existing.url}\n${pullRequest.number}: ${pullRequest.url}`,
+        );
+      }
+      pullRequestsByBranch.set(pullRequest.headRef, pullRequest);
+    }
+  }
   let pushedAnyBranch = false;
   let stackCommentsRefreshed = false;
   let submissionError: unknown;
   try {
+    pushedAnyBranch = pushBranches(context, repository, plan, options);
     for (const [index, item] of plan.entries()) {
-      pushedAnyBranch = (await pushBranch(context, repository, item, options)) || pushedAnyBranch;
       const pullRequest = await reconcilePullRequest(context, client, repository, item, options);
       const reviewers = splitList(options.reviewers);
       const teams = splitList(options.teamReviewers);
@@ -215,7 +239,9 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
 
   if (!submissionError || pushedAnyBranch) {
     try {
-      await refreshStackComments(client, repository, graph, pullRequestsByBranch);
+      await git.withRefSnapshotAsync(() =>
+        refreshStackComments(client, repository, graph, pullRequestsByBranch),
+      );
       stackCommentsRefreshed = true;
     } catch (error) {
       if (!submissionError) throw error;
@@ -253,9 +279,7 @@ function renderSubmitPlan(
   output.line(chalk.bold(`${heading} ${plan.length} ${pluralize('branch', plan.length)}`));
   plan.forEach((item, index) => {
     const connector = index === plan.length - 1 ? '└─' : '├─';
-    const action = item.openPullRequest
-      ? `update PR #${item.openPullRequest.number}`
-      : 'create PR';
+    const action = item.openPullRequest ? `update PR #${item.openPullRequest.number}` : 'create PR';
     output.line(
       `  ${chalk.dim(connector)} ${renderRelation(item.branch, item.base)}  ${chalk.dim(action)}`,
     );
@@ -313,19 +337,18 @@ function canSkipUnchangedSubmit(
   ) {
     return false;
   }
+  const heads = git.localBranchHeads();
   return branches.every((branch) => {
     const row = graph.get(branch);
-    const head = git.tryHead(branch);
+    const head = heads.get(branch);
     const parent = row?.parentBranchName;
     return Boolean(
       row?.lastSubmittedVersion &&
+      row.validationResult === 'VALID' &&
       head === row.lastSubmittedVersion &&
       parent &&
       row.parentBranchRevision &&
-      git.tryHead(parent) &&
-      git.tryHead(row.parentBranchRevision) &&
-      git.isAncestor(row.parentBranchRevision, branch) &&
-      !graph.needsRestack(branch),
+      heads.get(parent) === row.parentBranchRevision,
     );
   });
 }
@@ -337,19 +360,12 @@ async function refreshStackComments(
   knownPullRequests: Map<string, PullRequest>,
 ): Promise<void> {
   const openPullRequests = new Map(knownPullRequests);
-  for (const branch of graph.allRestackOrder()) {
-    if (openPullRequests.has(branch)) continue;
-    const open = (await client.listForHead(repository, branch)).filter(
-      (pullRequest) => pullRequest.state === 'OPEN',
-    );
-    if (open.length > 1) {
-      throw ggError(
-        `Multiple open pull requests exist for ${branch}:\n${open.map((pullRequest) => `${pullRequest.number}: ${pullRequest.url}`).join('\n')}`,
-      );
-    }
-    if (open[0]) openPullRequests.set(branch, open[0]);
-  }
-
+  const comments = await client.listComments(repository, [...openPullRequests.values()]);
+  const managedComments = new Map(
+    comments
+      .filter((comment) => comment.body.startsWith(STACK_COMMENT_MARKER))
+      .map((comment) => [comment.pullRequestNumber, comment]),
+  );
   for (const root of graph.children(graph.trunk)) {
     const stack = graph
       .descendants(root, true)
@@ -362,10 +378,9 @@ async function refreshStackComments(
 
     for (const current of stack) {
       const body = formatStackComment(graph.trunk, stack, current.branch);
-      const comments = await client.listComments(repository, current.pullRequest);
-      const managed = comments.find((comment) => comment.body.startsWith(STACK_COMMENT_MARKER));
+      const managed = managedComments.get(current.pullRequest.number);
       if (managed) {
-        await client.updateComment(repository, managed, body);
+        if (managed.body !== body) await client.updateComment(repository, managed, body);
       } else {
         await client.comment(repository, current.pullRequest, body);
       }
@@ -414,27 +429,37 @@ function submitScope(graph: StackGraph, anchor: string, includeDescendants: bool
   ];
 }
 
-async function pushBranch(
+function pushBranches(
   context: RepositoryContext,
   repository: GitHubRepository,
-  item: SubmitPlanItem,
+  plan: SubmitPlanItem[],
   options: SubmitOptions,
-): Promise<boolean> {
+): boolean {
   const { git } = context;
-  const remoteRef = `refs/heads/${item.branch}`;
-  const result = git.run(['ls-remote', '--heads', repository.pushUrl, remoteRef], {
+  if (plan.length === 0) return false;
+  const remoteRefs = plan.map((item) => `refs/heads/${item.branch}`);
+  const result = git.run(['ls-remote', '--heads', repository.pushUrl, ...remoteRefs], {
     allowFailure: true,
   });
-  if (result.status !== 0) throw ggError(`Could not inspect remote branch ${item.branch}.`);
-  const remoteHead = result.stdout.trim().split(/\s+/)[0] || undefined;
-  if (remoteHead === item.localHead && !options.always) return false;
-  const refspec = `refs/heads/${item.branch}:${remoteRef}`;
-  if (!remoteHead || git.isAncestor(remoteHead, item.localHead)) {
-    git.run(['push', repository.remote, refspec]);
-    return true;
+  if (result.status !== 0) throw ggError('Could not inspect remote branches.');
+  const remoteHeads = new Map<string, string>();
+  for (const line of result.stdout.split('\n').filter(Boolean)) {
+    const [revision, ref] = line.split(/\s+/);
+    if (revision && ref) remoteHeads.set(ref, revision);
   }
-
-  git.run(['push', `--force-with-lease=${remoteRef}:${remoteHead}`, repository.remote, refspec]);
+  const refspecs: string[] = [];
+  const leases: string[] = [];
+  for (const item of plan) {
+    const remoteRef = `refs/heads/${item.branch}`;
+    const remoteHead = remoteHeads.get(remoteRef);
+    if (remoteHead === item.localHead && !options.always) continue;
+    refspecs.push(`refs/heads/${item.branch}:${remoteRef}`);
+    if (remoteHead && !git.isAncestor(remoteHead, item.localHead)) {
+      leases.push(`--force-with-lease=${remoteRef}:${remoteHead}`);
+    }
+  }
+  if (refspecs.length === 0) return false;
+  git.run(['push', '--atomic', ...leases, repository.remote, ...refspecs]);
   return true;
 }
 

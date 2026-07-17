@@ -6,7 +6,7 @@ import {
   authenticatedGitHubClient,
   resolveGitHubRepository,
   resolveRemote,
-  resolveSubmissionRepository,
+  SubmissionRepositoryResolver,
   type GitHubRepository,
   type PullRequest,
 } from '../github.js';
@@ -68,14 +68,16 @@ export async function sync(context: RepositoryContext, options: SyncOptions): Pr
 
   if (options.restack !== false) {
     output.line('🥞 Restacking branches...');
-    const queue = graph
-      .allRestackOrder()
-      .filter(
-        (branch) =>
-          ![...skippedMergedRoots].some(
-            (root) => branch === root || graph.ancestors(branch).includes(root),
-          ),
-      );
+    const queue = git.withRefSnapshot(() =>
+      graph
+        .allRestackOrder()
+        .filter(
+          (branch) =>
+            ![...skippedMergedRoots].some(
+              (root) => branch === root || graph.ancestors(branch).includes(root),
+            ),
+        ),
+    );
     await engine.runQueueWithoutJournal(queue, (branch) => {
       output.warning(`${branch} could not be restacked cleanly.`);
       output.line(`You can resolve conflicts with gg restack --branch ${branch}.`);
@@ -88,19 +90,30 @@ async function loadPrState(
   graph: StackGraph,
   fallbackRepository: GitHubRepository,
 ): Promise<PrState> {
-  const clients = new Map<string, Awaited<ReturnType<typeof authenticatedGitHubClient>>>();
   const byBranch = new Map<string, PullRequest[]>();
+  const resolver = new SubmissionRepositoryResolver(context.git, graph.trunk);
+  const groups = new Map<string, { repository: GitHubRepository; branches: string[] }>();
   for (const branch of graph.trackedBranches()) {
     if (branch === graph.trunk) continue;
-    const repository =
-      resolveSubmissionRepository(context.git, graph.trunk, branch) ?? fallbackRepository;
+    const repository = resolver.resolve(branch) ?? fallbackRepository;
     const key = `${repository.host}/${repository.owner}/${repository.name}/${repository.headOwner}`;
-    let client = clients.get(key);
-    if (!client) {
-      client = await authenticatedGitHubClient(repository);
-      clients.set(key, client);
+    const group = groups.get(key) ?? { repository, branches: [] };
+    group.branches.push(branch);
+    groups.set(key, group);
+  }
+  for (const { repository, branches } of groups.values()) {
+    const client = await authenticatedGitHubClient(repository);
+    const pullRequests = await client.listPullRequests(repository);
+    for (const branch of branches) {
+      byBranch.set(
+        branch,
+        pullRequests.filter(
+          (pullRequest) =>
+            pullRequest.headRef === branch &&
+            (!pullRequest.headOwner || pullRequest.headOwner === repository.headOwner),
+        ),
+      );
     }
-    byBranch.set(branch, await client.listForHead(repository, branch));
   }
   return { byBranch };
 }
