@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -14,6 +14,7 @@ import {
   rmdirSync,
   rmSync,
   symlinkSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -32,6 +33,16 @@ const binDirectory = path.join(localDirectory, 'bin');
 const prefix = path.join(shareDirectory, 'gg');
 const executable = path.join(binDirectory, 'gg');
 const installedExecutable = path.join(prefix, 'bin', 'gg');
+const skillName = 'gg-stacked-branches';
+const skillSource = path.join(project, 'skills', skillName);
+const agentsDirectory = path.join(installHome, '.agents');
+const agentsSkillsDirectory = path.join(agentsDirectory, 'skills');
+const claudeDirectory = path.join(installHome, '.claude');
+const claudeSkillsDirectory = path.join(claudeDirectory, 'skills');
+const skillTargets = [
+  path.join(agentsSkillsDirectory, skillName),
+  path.join(claudeSkillsDirectory, skillName),
+];
 const lockPath = path.join(installHome, '.gg-stacked-cli-install.lock');
 const eventId = randomUUID();
 const action = process.argv[2];
@@ -46,6 +57,7 @@ let executableCreated = false;
 let installComplete = false;
 let createdDirectories = [];
 let recoveredDirectories = [];
+let skillReplacements = [];
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
@@ -67,6 +79,7 @@ try {
 
 function install() {
   requireSupportedNode();
+  const skills = skillInstallationsFromSource();
   ensureInstallDirectories();
   acquireLock();
   cleanupOwnedTransients();
@@ -75,23 +88,22 @@ function install() {
   if (existingExecutable?.isDirectory()) {
     throw new Error(`Refusing to replace directory at executable path: ${executable}`);
   }
-  if (
-    existingExecutable &&
-    !existingExecutable.isFile() &&
-    !existingExecutable.isSymbolicLink()
-  ) {
+  if (existingExecutable && !existingExecutable.isFile() && !existingExecutable.isSymbolicLink()) {
     throw new Error(`Refusing to replace unsupported executable path: ${executable}`);
   }
 
   let previousManifest;
+  let previousSkills = [];
   if (existsSync(prefix)) {
     previousManifest = readAndValidateManifest(prefix);
+    previousSkills = validateSkillInstallations(previousManifest.skills);
     createdDirectories = mergeDirectories(
       validateCreatedDirectories(previousManifest.createdDirectories),
       createdDirectories,
     );
     persistLockDirectories();
   }
+  validateSkillTargetsForInstall(previousSkills);
 
   process.stdout.write('Installing...\n');
   buildRoot = createOwnedTransient('.gg-build-');
@@ -157,12 +169,13 @@ function install() {
   );
   verifyExecutable(path.join(stagingPrefix, 'bin', 'gg'));
   writeJson(path.join(stagingPrefix, MANIFEST), {
-    schemaVersion: 1,
+    schemaVersion: 2,
     product: PRODUCT,
     source: project,
     prefix,
     executable,
     createdDirectories,
+    skills,
   });
 
   if (previousManifest) {
@@ -185,12 +198,14 @@ function install() {
     executableCreated = true;
   }
   verifyExecutable(executable);
+  replaceSkills(skills);
 
   if (backupPrefix) {
     removeOwnedFinal(backupPrefix);
     backupPrefix = undefined;
   }
   executableBackup = undefined;
+  skillReplacements = [];
 
   installComplete = true;
   finalCreated = false;
@@ -198,6 +213,7 @@ function install() {
   buildRoot = undefined;
   releaseLock();
   process.stdout.write(`Installed gg at ${executable}.\n`);
+  for (const { target } of skills) process.stdout.write(`Installed agent skill at ${target}.\n`);
   if (!pathContains(binDirectory)) {
     process.stdout.write(`Add ${binDirectory} to PATH before invoking gg.\n`);
   }
@@ -223,6 +239,7 @@ function uninstall() {
     validateCreatedDirectories(manifest?.createdDirectories),
   );
   persistLockDirectories();
+  removeInstalledSkills(validateSkillInstallations(manifest?.skills));
 
   if (pathEntry(executable)) {
     if (isOwnedExecutableLink()) unlinkSync(executable);
@@ -246,10 +263,24 @@ function requireSupportedNode() {
 
 function ensureInstallDirectories() {
   const missing = [];
-  for (const directory of [localDirectory, shareDirectory, binDirectory]) {
+  for (const directory of [
+    localDirectory,
+    shareDirectory,
+    binDirectory,
+    agentsDirectory,
+    agentsSkillsDirectory,
+    claudeDirectory,
+    claudeSkillsDirectory,
+  ]) {
     const entry = pathEntry(directory);
     if (entry) {
-      if (!entry.isDirectory()) throw new Error(`Expected a directory at ${directory}.`);
+      let followed;
+      try {
+        followed = statSync(directory);
+      } catch {
+        throw new Error(`Expected a directory at ${directory}.`);
+      }
+      if (!followed.isDirectory()) throw new Error(`Expected a directory at ${directory}.`);
       continue;
     }
     missing.push(directory);
@@ -384,7 +415,7 @@ function readAndValidateManifest(directory) {
   }
   const manifest = readJson(path.join(directory, MANIFEST));
   if (
-    manifest?.schemaVersion !== 1 ||
+    ![1, 2].includes(manifest?.schemaVersion) ||
     manifest.product !== PRODUCT ||
     manifest.prefix !== prefix ||
     manifest.executable !== executable
@@ -392,7 +423,81 @@ function readAndValidateManifest(directory) {
     throw new Error(`Refusing to modify unrecognized installation directory: ${directory}`);
   }
   validateCreatedDirectories(manifest.createdDirectories);
+  validateSkillInstallations(manifest.skills);
   return manifest;
+}
+
+function skillInstallationsFromSource() {
+  const entry = pathEntry(skillSource);
+  if (!entry?.isDirectory() || !existsSync(path.join(skillSource, 'SKILL.md'))) {
+    throw new Error(`Missing bundled agent skill: ${skillSource}`);
+  }
+  const digest = digestDirectory(skillSource);
+  return skillTargets.map((target) => ({ target, digest }));
+}
+
+function validateSkillTargetsForInstall(previousSkills) {
+  const previousByTarget = new Map(previousSkills.map((skill) => [skill.target, skill]));
+  for (const target of skillTargets) {
+    const entry = pathEntry(target);
+    if (!entry) continue;
+    const previous = previousByTarget.get(target);
+    if (!previous) throw new Error(`Refusing to replace unrecognized agent skill: ${target}`);
+    if (!entry.isDirectory() || digestDirectory(target) !== previous.digest) {
+      throw new Error(`Refusing to replace modified agent skill: ${target}`);
+    }
+  }
+}
+
+function replaceSkills(skills) {
+  for (const [index, skill] of skills.entries()) {
+    const backup = pathEntry(skill.target)
+      ? path.join(buildRoot, `skill-backup-${index}`)
+      : undefined;
+    if (backup) renameSync(skill.target, backup);
+    skillReplacements.push({ target: skill.target, backup });
+    cpSync(skillSource, skill.target, { recursive: true, errorOnExist: true });
+    if (digestDirectory(skill.target) !== skill.digest) {
+      throw new Error(`Installed agent skill failed validation: ${skill.target}`);
+    }
+  }
+}
+
+function removeInstalledSkills(skills) {
+  for (const skill of skills) {
+    const entry = pathEntry(skill.target);
+    if (!entry) continue;
+    if (!entry.isDirectory() || digestDirectory(skill.target) !== skill.digest) {
+      process.stderr.write(`Preserved modified agent skill: ${skill.target}\n`);
+      continue;
+    }
+    rmSync(skill.target, { recursive: true, force: true });
+  }
+}
+
+function digestDirectory(directory) {
+  const digest = createHash('sha256');
+  const visit = (current, relative) => {
+    const entries = readdirSync(current, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+    for (const entry of entries) {
+      const childRelative = relative ? path.join(relative, entry.name) : entry.name;
+      const child = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        digest.update(`directory\0${childRelative}\0`);
+        visit(child, childRelative);
+      } else if (entry.isFile()) {
+        digest.update(`file\0${childRelative}\0`);
+        digest.update(readFileSync(child));
+        digest.update('\0');
+      } else {
+        throw new Error(`Agent skill contains an unsupported path: ${child}`);
+      }
+    }
+  };
+  visit(directory, '');
+  return digest.digest('hex');
 }
 
 function copyProject(destination) {
@@ -431,10 +536,7 @@ function verifyUninstalled() {
         name.startsWith('.gg-backup-')
       ) {
         const target = path.join(shareDirectory, name);
-        if (
-          (name.startsWith('.gg-backup-') && isOwnedFinal(target)) ||
-          isOwnedTransient(target)
-        ) {
+        if ((name.startsWith('.gg-backup-') && isOwnedFinal(target)) || isOwnedTransient(target)) {
           throw new Error(`Temporary install directory still exists: ${target}`);
         }
       }
@@ -463,6 +565,20 @@ function isOwnedFinal(directory) {
 
 function cleanupAfterFailure() {
   let ownedCleanupComplete = true;
+  try {
+    for (const replacement of [...skillReplacements].reverse()) {
+      if (pathEntry(replacement.target)) {
+        rmSync(replacement.target, { recursive: true, force: true });
+      }
+      if (replacement.backup && pathEntry(replacement.backup)) {
+        renameSync(replacement.backup, replacement.target);
+      }
+    }
+    skillReplacements = [];
+  } catch {
+    ownedCleanupComplete = false;
+    // Best-effort cleanup must continue through every owned path.
+  }
   try {
     if (stagingPrefix) removeOwnedTransient(stagingPrefix);
   } catch {
@@ -538,11 +654,40 @@ function removeEmptyDirectories(directories) {
 function validateCreatedDirectories(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error('Installer metadata has invalid directory ownership.');
-  const allowed = new Set([localDirectory, shareDirectory, binDirectory]);
+  const allowed = new Set([
+    localDirectory,
+    shareDirectory,
+    binDirectory,
+    agentsDirectory,
+    agentsSkillsDirectory,
+    claudeDirectory,
+    claudeSkillsDirectory,
+  ]);
   if (value.some((directory) => typeof directory !== 'string' || !allowed.has(directory))) {
     throw new Error('Installer metadata has invalid directory ownership.');
   }
   return [...new Set(value)];
+}
+
+function validateSkillInstallations(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('Installer metadata has invalid agent skills.');
+  const allowed = new Set(skillTargets);
+  const seen = new Set();
+  for (const skill of value) {
+    if (
+      !skill ||
+      typeof skill !== 'object' ||
+      !allowed.has(skill.target) ||
+      typeof skill.digest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(skill.digest) ||
+      seen.has(skill.target)
+    ) {
+      throw new Error('Installer metadata has invalid agent skills.');
+    }
+    seen.add(skill.target);
+  }
+  return value.map(({ target, digest }) => ({ target, digest }));
 }
 
 function mergeDirectories(...groups) {
