@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import chalk from 'chalk';
 import type { RepositoryContext } from '../context.js';
 import { StackGraph } from '../graph.js';
 import type { OperationState } from '../restack.js';
@@ -18,30 +19,45 @@ export async function showLog(
   options: LogOptions,
 ): Promise<void> {
   await context.ensureInitialized();
+  const lines: string[] = [];
   let graph = new StackGraph(context.git, context.store);
   const validation = graph.refresh();
   graph = new StackGraph(context.git, context.store);
   const current = currentBranchForLog(context);
   if (style === 'long') {
-    renderLong(context);
+    renderLong(context, lines);
   } else if (options.classic) {
-    renderClassic(context, graph);
+    renderClassic(context, graph, lines);
   } else {
     const visible = visibleBranches(graph, current, options);
-    const ordered = options.reverse ? visible : visible.toReversed();
-    for (const branch of ordered) {
-      if (style === 'short') renderShort(context, graph, branch, current);
-      else renderDefault(context, graph, branch, current);
+    const topologyLayout =
+      style === 'default' && !options.reverse && !options.stack && options.steps === undefined;
+    if (topologyLayout) {
+      renderDefaultGraph(context, graph, current, new Set(visible), lines);
+    } else {
+      const ordered = options.reverse ? visible : visible.toReversed();
+      for (const branch of ordered) {
+        if (style === 'short') renderShort(context, graph, branch, current, lines);
+        else
+          renderDefaultBranch(
+            context,
+            graph,
+            branch,
+            current,
+            '  '.repeat(graph.depth(branch)),
+            lines,
+          );
+      }
     }
   }
 
   if (validation.diverged.length > 0) {
-    context.output.line("WARNING: The following branch has diverged from gg's tracking:");
-    for (const branch of validation.diverged) context.output.line(`  ${branch}`);
+    lines.push(chalk.yellow("WARNING: The following branch has diverged from gg's tracking:"));
+    for (const branch of validation.diverged) lines.push(chalk.yellow(`  ${branch}`));
   }
   if (validation.missing.length > 0) {
-    context.output.line('WARNING: The following tracked branches no longer exist locally:');
-    for (const branch of validation.missing) context.output.line(`  ${branch}`);
+    lines.push(chalk.yellow('WARNING: The following tracked branches no longer exist locally:'));
+    for (const branch of validation.missing) lines.push(chalk.yellow(`  ${branch}`));
   }
 
   if (style !== 'long' && !options.classic && options.showUntracked) {
@@ -51,10 +67,12 @@ export async function showLog(
       .filter((branch) => !tracked.has(branch))
       .toSorted();
     if (untracked.length > 0) {
-      context.output.line('Untracked branches:');
-      for (const branch of untracked) context.output.line(`  ${branch}`);
+      lines.push('Untracked branches:');
+      for (const branch of untracked) lines.push(`  ${branch}`);
     }
   }
+
+  context.output.page(lines.length > 0 ? `${lines.join('\n')}\n` : '');
 }
 
 function visibleBranches(
@@ -90,36 +108,63 @@ function renderShort(
   graph: StackGraph,
   branch: string,
   current: string | undefined,
+  lines: string[],
 ): void {
-  const marker = branch === current ? '◉' : '◯';
   const indent = '  '.repeat(graph.depth(branch));
-  context.output.line(
-    `${indent}${marker}  ${branch}${branch === current ? ' (current)' : ''}${statusSuffix(context, graph, branch)}`,
+  lines.push(
+    `${indent}${branchMarker(branch, current)}  ${branchLabel(branch, current)}${statusSuffix(context, graph, branch)}`,
   );
 }
 
-function renderDefault(
+function renderDefaultGraph(
+  context: RepositoryContext,
+  graph: StackGraph,
+  current: string | undefined,
+  visible: Set<string>,
+  lines: string[],
+): void {
+  const visit = (branch: string, prefix: string): void => {
+    const children = graph.children(branch).filter((child) => visible.has(child));
+    for (const [index, child] of children.entries()) {
+      visit(child, `${prefix}${'│  '.repeat(index)}`);
+    }
+    if (children.length > 1) {
+      lines.push(chalk.gray(`${prefix}├──${'┴──'.repeat(children.length - 2)}┘`));
+    }
+    if (visible.has(branch)) renderDefaultBranch(context, graph, branch, current, prefix, lines);
+  };
+  visit(graph.trunk, '');
+}
+
+function renderDefaultBranch(
   context: RepositoryContext,
   graph: StackGraph,
   branch: string,
   current: string | undefined,
+  prefix: string,
+  lines: string[],
 ): void {
-  const marker = branch === current ? '◉' : '◯';
-  const indent = '  '.repeat(graph.depth(branch));
   const revision = context.git.tryHead(branch);
-  context.output.line(
-    `${indent}${marker} ${branch}${branch === current ? ' (current)' : ''}${statusSuffix(context, graph, branch)}`,
+  lines.push(
+    `${chalk.gray(prefix)}${branchMarker(branch, current)} ${branchLabel(branch, current)}${statusSuffix(context, graph, branch)}`,
   );
   if (!revision) return;
+  const parent = graph.parent(branch);
+  if (parent && revision === context.git.tryHead(parent)) {
+    lines.push(chalk.gray(`${prefix}│ `));
+    lines.push(chalk.gray(`${prefix}│ `));
+    lines.push(chalk.gray(`${prefix}│`));
+    return;
+  }
   const age = context.git.capture(['show', '-s', '--format=%cr', branch]);
   const subject = context.git.capture(['show', '-s', '--format=%s', branch]);
-  context.output.line(`${indent}│ ${age}`);
-  context.output.line(`${indent}│ `);
-  context.output.line(`${indent}│ ${revision.slice(0, 7)} - ${subject}`);
-  context.output.line(`${indent}│`);
+  lines.push(chalk.gray(`${prefix}│ ${age}`));
+  lines.push(chalk.gray(`${prefix}│ `));
+  lines.push(chalk.gray(`${prefix}│ ${revision.slice(0, 7)} - ${subject}`));
+  lines.push(chalk.gray(`${prefix}│`));
 }
 
-function renderLong(context: RepositoryContext): void {
+function renderLong(context: RepositoryContext, lines: string[]): void {
   const commits = context.git.capture([
     'log',
     '--graph',
@@ -128,10 +173,10 @@ function renderLong(context: RepositoryContext): void {
     '--date-order',
     '--branches',
   ]);
-  if (commits) for (const line of commits.split('\n')) context.output.line(line);
+  if (commits) lines.push(...commits.split('\n'));
 }
 
-function renderClassic(context: RepositoryContext, graph: StackGraph): void {
+function renderClassic(context: RepositoryContext, graph: StackGraph, lines: string[]): void {
   const branches = [graph.trunk, ...graph.descendants(graph.trunk, false, true)].toReversed();
   for (const branch of branches) {
     const row = graph.get(branch);
@@ -142,8 +187,16 @@ function renderClassic(context: RepositoryContext, graph: StackGraph): void {
     ) {
       continue;
     }
-    context.output.line(`${'  '.repeat(graph.depth(branch))}↱ $ ${branch}`);
+    lines.push(`${chalk.gray(`${'  '.repeat(graph.depth(branch))}↱ $`)} ${chalk.blue(branch)}`);
   }
+}
+
+function branchMarker(branch: string, current: string | undefined): string {
+  return branch === current ? chalk.cyan('◉') : chalk.gray('◯');
+}
+
+function branchLabel(branch: string, current: string | undefined): string {
+  return branch === current ? chalk.cyan(`${branch} (current)`) : chalk.blue(branch);
 }
 
 function statusSuffix(context: RepositoryContext, graph: StackGraph, branch: string): string {
@@ -153,7 +206,11 @@ function statusSuffix(context: RepositoryContext, graph: StackGraph, branch: str
   if (submitted) {
     statuses.push(submitted === context.git.tryHead(branch) ? 'submitted' : 'changed since submit');
   }
-  return statuses.length > 0 ? ` (${statuses.join(', ')})` : '';
+  if (statuses.length === 0) return '';
+  const suffix = ` (${statuses.join(', ')})`;
+  return statuses.every((status) => status === 'submitted')
+    ? chalk.green(suffix)
+    : chalk.yellow(suffix);
 }
 
 function currentBranchForLog(context: RepositoryContext): string | undefined {

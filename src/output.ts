@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import chalk from 'chalk';
 
 export interface OutputOptions {
@@ -20,6 +21,28 @@ export class Output {
   raw(message: string): void {
     if (!this.quiet) {
       process.stdout.write(message);
+    }
+  }
+
+  page(message: string): void {
+    if (this.quiet) return;
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stdout.write(message);
+      return;
+    }
+
+    const pager = process.env.GG_PAGER || 'less';
+    const result = spawnSync(pager, ['-R'], {
+      input: message,
+      stdio: ['pipe', 'inherit', 'inherit'],
+      env: { ...process.env, LESS: '-R' },
+    });
+    if (result.error) {
+      if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') {
+        process.stdout.write(message);
+        return;
+      }
+      throw result.error;
     }
   }
 

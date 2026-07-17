@@ -1,7 +1,9 @@
-import { confirm, select } from '@inquirer/prompts';
+import { confirm } from '@inquirer/prompts';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
+import { buildMoveTreeChoices } from '../move-tree.js';
+import { selectWithEscape } from '../prompts.js';
 import { RestackEngine } from '../restack.js';
 
 export interface RestackOptions {
@@ -46,19 +48,24 @@ export async function moveBranches(
   const graph = new StackGraph(context.git, context.store);
   const source = options.source ?? context.git.branch();
   graph.require(source);
+  if (source === graph.trunk) throw ggError('Cannot perform this operation on the trunk branch.');
   let target = options.onto;
   if (!target) {
     context.requireInteractive();
     const excluded = new Set([source, ...graph.descendants(source)]);
-    const choices = graph
+    const candidates = graph
       .trackedBranches()
-      .filter((branch) => !excluded.has(branch) && context.git.branchExists(branch))
-      .toSorted();
-    target = await select({
-      message: `Choose a new base for ${source} (autocomplete or arrow keys)`,
-      choices: choices.map((branch) => ({ name: branch, value: branch })),
+      .filter((branch) => !excluded.has(branch) && context.git.branchExists(branch));
+    target = await selectWithEscape({
+      message: `Choose a new base for ${source} (type to search, arrow keys, or Esc to cancel)`,
+      choices: buildMoveTreeChoices(graph, candidates),
       default: graph.parent(source),
+      pageSize: 12,
     });
+    if (!target) {
+      context.output.line('Move cancelled.');
+      return;
+    }
   }
   if (!context.git.branchExists(target)) throw ggError(`Could not find branch ${target}.`);
   await new RestackEngine(context.git, context.store, context.output, context.verify).move(
