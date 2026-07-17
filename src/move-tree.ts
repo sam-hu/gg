@@ -10,7 +10,6 @@ export interface MoveTree {
 export interface MoveTreeChoice {
   activeName: string;
   name: string;
-  searchName: string;
   short: string;
   value: string;
 }
@@ -81,10 +80,22 @@ export function buildMoveTreeChoices(
     return {
       activeName: `${activeCells}${styleActiveLabel(lane, branch, colors)}`,
       name: `${cells}${colorLane(lane, branch, colors)}`,
-      searchName: branch,
       short: branch,
       value: branch,
     };
+  });
+}
+
+export function renderMoveTree(
+  tree: MoveTree,
+  candidates: readonly string[],
+  current: string,
+  colors = true,
+): string[] {
+  return buildMoveTreeChoices(tree, candidates, colors).map((choice) => {
+    if (choice.value !== current) return choice.name;
+    const line = choice.activeName.replace('○', '◉');
+    return `${line}${colors ? chalk.cyan(' (current)') : ' (current)'}`;
   });
 }
 

@@ -9,6 +9,7 @@ import {
 } from './commands/branch.js';
 import { amendCommit, createCommit, type CommitOptions } from './commands/commit.js';
 import { showLog, type LogOptions } from './commands/log.js';
+import { mergeBottomBranch } from './commands/merge.js';
 import {
   checkoutBranch,
   navigateBottom,
@@ -164,6 +165,11 @@ program
   .option('-d, --delete-all', 'delete every merged or closed PR branch')
   .option('-a, --all', 'sync every configured trunk')
   .action(async (options: SyncOptions) => withContext((context) => sync(context, options)));
+
+program
+  .command('merge')
+  .description('merge the bottom pull request and restack the remaining branches')
+  .action(async () => withContext(mergeBottomBranch));
 
 program
   .command('move')

@@ -40,6 +40,10 @@ export interface IssueComment {
   body: string;
 }
 
+export interface MergeResult {
+  sha: string;
+}
+
 export interface GitHubClient {
   preflight(repository: GitHubRepository): Promise<void>;
   listForHead(repository: GitHubRepository, branch: string): Promise<PullRequest[]>;
@@ -59,6 +63,11 @@ export interface GitHubClient {
   listComments(repository: GitHubRepository, pullRequest: PullRequest): Promise<IssueComment[]>;
   comment(repository: GitHubRepository, pullRequest: PullRequest, body: string): Promise<void>;
   updateComment(repository: GitHubRepository, comment: IssueComment, body: string): Promise<void>;
+  merge(
+    repository: GitHubRepository,
+    pullRequest: PullRequest,
+    expectedHead: string,
+  ): Promise<MergeResult>;
   enableAutoMerge(repository: GitHubRepository, pullRequest: PullRequest): Promise<void>;
   reviewersForRerequest(repository: GitHubRepository, pullRequest: PullRequest): Promise<string[]>;
 }
@@ -332,6 +341,22 @@ class GhClient implements GitHubClient {
     });
   }
 
+  async merge(
+    repository: GitHubRepository,
+    pullRequest: PullRequest,
+    expectedHead: string,
+  ): Promise<MergeResult> {
+    return normalizeMergeResult(
+      this.api(
+        repository,
+        'PUT',
+        `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/merge`,
+        { merge_method: 'squash', sha: expectedHead },
+      ),
+      pullRequest,
+    );
+  }
+
   async reviewersForRerequest(
     repository: GitHubRepository,
     pullRequest: PullRequest,
@@ -502,6 +527,22 @@ class TokenClient implements GitHubClient {
     });
   }
 
+  async merge(
+    repository: GitHubRepository,
+    pullRequest: PullRequest,
+    expectedHead: string,
+  ): Promise<MergeResult> {
+    return normalizeMergeResult(
+      await this.api(
+        repository,
+        'PUT',
+        `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/merge`,
+        { merge_method: 'squash', sha: expectedHead },
+      ),
+      pullRequest,
+    );
+  }
+
   async reviewersForRerequest(
     repository: GitHubRepository,
     pullRequest: PullRequest,
@@ -591,6 +632,16 @@ function normalizeIssueComments(value: unknown): IssueComment[] {
     id: Number(comment.id),
     body: String(comment.body ?? ''),
   }));
+}
+
+function normalizeMergeResult(value: any, pullRequest: PullRequest): MergeResult {
+  if (!value || value.merged !== true) {
+    const detail = typeof value?.message === 'string' ? `: ${value.message}` : '';
+    throw ggError(`GitHub could not merge PR #${pullRequest.number}${detail}`);
+  }
+  const sha = String(value.sha ?? '');
+  if (!sha) throw ggError(`GitHub did not return a merge commit for PR #${pullRequest.number}.`);
+  return { sha };
 }
 
 function normalizeHost(host: string): string {

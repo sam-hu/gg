@@ -4,20 +4,21 @@ Reference behavior was researched against the locally installed Graphite CLI `gt
 
 ## Command mapping
 
-| `gg` canonical command             | `gt 1.8.6` behavioral reference                                   | Status                                |
-| ---------------------------------- | ----------------------------------------------------------------- | ------------------------------------- |
-| `gg init`                          | `gt init`                                                         | Implemented                           |
-| `gg branch create`, `gg bc`        | hidden/deprecated `gt branch create`, `gt bc`; modern `gt create` | Implemented                           |
-| `gg track`                         | `gt track`                                                        | Implemented for one branch at a time  |
-| `gg up/down/top/bottom`            | same                                                              | Implemented                           |
-| `gg commit create`, `gg cc`        | hidden/deprecated forms; equivalent to `gt modify -c`             | Implemented                           |
-| `gg commit amend`, `gg ca`         | hidden/deprecated forms; equivalent to `gt modify`                | Implemented                           |
-| `gg restack`, `gg r`               | same                                                              | Implemented                           |
-| `gg log`, `gg l`, `gg ls`, `gg ll` | same aliases                                                      | Implemented, approximate presentation |
-| `gg sync`                          | `gt sync`                                                         | GitHub-native implementation          |
-| `gg move`                          | same                                                              | Implemented                           |
-| `gg submit`, `gg s`, `gg ss`       | `gt submit`, aliases                                              | GitHub-native implementation          |
-| `gg continue`, `gg abort`          | same recovery workflow                                            | Implemented                           |
+| `gg` canonical command             | `gt 1.8.6` behavioral reference                                   | Status                                 |
+| ---------------------------------- | ----------------------------------------------------------------- | -------------------------------------- |
+| `gg init`                          | `gt init`                                                         | Implemented                            |
+| `gg branch create`, `gg bc`        | hidden/deprecated `gt branch create`, `gt bc`; modern `gt create` | Implemented                            |
+| `gg track`                         | `gt track`                                                        | Implemented for one branch at a time   |
+| `gg up/down/top/bottom`            | same                                                              | Implemented                            |
+| `gg commit create`, `gg cc`        | hidden/deprecated forms; equivalent to `gt modify -c`             | Implemented                            |
+| `gg commit amend`, `gg ca`         | hidden/deprecated forms; equivalent to `gt modify`                | Implemented                            |
+| `gg restack`, `gg r`               | same                                                              | Implemented                            |
+| `gg log`, `gg l`, `gg ls`, `gg ll` | same aliases                                                      | Implemented, approximate presentation  |
+| `gg sync`                          | `gt sync`                                                         | GitHub-native implementation           |
+| `gg merge`                         | `gt merge`                                                        | GitHub-native, one bottom PR at a time |
+| `gg move`                          | same                                                              | Implemented                            |
+| `gg submit`, `gg s`, `gg ss`       | `gt submit`, aliases                                              | GitHub-native implementation           |
+| `gg continue`, `gg abort`          | same recovery workflow                                            | Implemented                            |
 
 The legacy branch/commit groups still execute in `gt 1.8.6`, but Graphite hides them from root help and prints rename warnings. They are deliberately canonical in `gg`, as required, and do not print deprecation warnings.
 
@@ -35,6 +36,7 @@ The legacy branch/commit groups still execute in `gt 1.8.6`, but Graphite hides 
 | Move            | cycle/self rejection, source/onto, descendants, measured children-first `--only`                                                      | Cycle errors exit 1 instead of gt's observed exit-0 bug; clean current-branch moves use safe replay/reset |
 | Log             | all stacks, current marker, restack/submission state, classic/short/long modes, untracked branches                                    | Lane art and age layout are readable approximations                                                       |
 | Sync            | fetch, safe trunk FF/divergence, all-stack restack, PR-state cleanup, warn-and-skip conflicts                                         | Graphite backend replaced by GitHub; `--all` currently operates on the active trunk only                  |
+| Merge           | GitHub squash merge, bottom-branch discovery, checkout-style tree confirmation, local cleanup and descendant restack                  | Merges one bottom PR rather than every PR from trunk through the current branch                           |
 | Submit          | downstack/stack scope, fork bases/heads, draft/publish, idempotent update, reviewers, comments, rerequest, auto-merge, dry run, lease | Plan lines are original; `--view`/`--web` print instructions instead of launching Graphite/GitHub UI      |
 | Force push      | automatic pinned force-with-lease; never raw force; exact remote OID is checked                                                       | A concurrent remote update safely rejects the lease                                                       |
 

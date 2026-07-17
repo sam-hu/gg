@@ -43,7 +43,7 @@ export async function trackBranch(
       .trackedBranches()
       .filter((candidate) => !excluded.has(candidate) && git.branchExists(candidate));
     parent = await selectWithEscape({
-      message: `Choose a parent for ${branch} (type to search, arrow keys, or Esc to cancel)`,
+      message: `Choose a parent for ${branch} (arrow keys, Enter, or Esc to cancel)`,
       choices: buildMoveTreeChoices(graph, candidates),
       default: graph.parent(branch) ?? graph.trunk,
       pageSize: 12,

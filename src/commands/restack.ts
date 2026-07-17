@@ -57,7 +57,7 @@ export async function moveBranches(
       .trackedBranches()
       .filter((branch) => !excluded.has(branch) && context.git.branchExists(branch));
     target = await selectWithEscape({
-      message: `Choose a new base for ${source} (type to search, arrow keys, or Esc to cancel)`,
+      message: `Choose a new base for ${source} (arrow keys, Enter, or Esc to cancel)`,
       choices: buildMoveTreeChoices(graph, candidates),
       default: graph.parent(source),
       pageSize: 12,

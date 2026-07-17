@@ -1,17 +1,14 @@
 import { emitKeypressEvents, type Interface } from 'node:readline';
 import {
   createPrompt,
-  isBackspaceKey,
   isDownKey,
   isEnterKey,
   isUpKey,
   makeTheme,
-  useEffect,
   useKeypress,
   useMemo,
   usePagination,
   usePrefix,
-  useRef,
   useState,
 } from '@inquirer/core';
 import chalk from 'chalk';
@@ -21,7 +18,6 @@ const ESCAPE_CODE_TIMEOUT_MS = 50;
 interface SelectChoice<Value> {
   activeName?: string;
   name: string;
-  searchName?: string;
   short?: string;
   value: Value;
 }
@@ -61,7 +57,7 @@ export async function selectWithEscape<Value>(
     const promptContext = streams.output
       ? { input, output: streams.output, signal: controller.signal }
       : { input, signal: controller.signal };
-    return await createSearchableSelect<Value>()(config, promptContext);
+    return await createArrowSelect<Value>()(config, promptContext);
   } catch (error) {
     if (escaped && error instanceof Error && error.name === 'AbortPromptError') return undefined;
     throw error;
@@ -70,10 +66,13 @@ export async function selectWithEscape<Value>(
   }
 }
 
-function createSearchableSelect<Value>() {
+function createArrowSelect<Value>() {
   return createPrompt<Value, SelectWithEscapeConfig<Value>>((config, done) => {
     const { loop = true, pageSize = 7 } = config;
-    const theme = makeTheme({ icon: { cursor: '❯' } });
+    const theme = makeTheme({
+      prefix: { idle: '' },
+      icon: { cursor: '❯' },
+    });
     const choices = useMemo(() => config.choices, [config.choices]);
     if (choices.length === 0) throw new Error('No branches are available to select.');
     const defaultIndex = useMemo(() => {
@@ -82,14 +81,10 @@ function createSearchableSelect<Value>() {
     }, [choices, config.default]);
     const [active, setActive] = useState(defaultIndex < 0 ? 0 : defaultIndex);
     const [status, setStatus] = useState<'idle' | 'done'>('idle');
-    const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
     const selected = choices[active]!;
     const prefix = usePrefix({ status, theme });
 
-    useEffect(() => () => clearTimeout(searchTimeout.current), []);
-
     useKeypress((key, readline) => {
-      clearTimeout(searchTimeout.current);
       if (isEnterKey(key)) {
         setStatus('done');
         done(selected.value);
@@ -103,25 +98,12 @@ function createSearchableSelect<Value>() {
         else setActive(Math.max(0, Math.min(choices.length - 1, next)));
         return;
       }
-      if (isBackspaceKey(key)) {
-        readline.clearLine(0);
-        return;
-      }
-      const searchTerm = readline.line.toLowerCase();
-      const match = choices.findIndex((choice) =>
-        (choice.searchName ?? choice.name).toLowerCase().startsWith(searchTerm),
-      );
-      if (match >= 0) setActive(match);
-      searchTimeout.current = setTimeout(() => readline.clearLine(0), 700);
+      readline.clearLine(0);
     });
 
     const message = theme.style.message(config.message, status);
     if (status === 'done') {
-      return [
-        prefix,
-        message,
-        theme.style.answer(selected.short ?? selected.searchName ?? selected.name),
-      ]
+      return [prefix, message, theme.style.answer(selected.short ?? selected.name)]
         .filter(Boolean)
         .join(' ');
     }

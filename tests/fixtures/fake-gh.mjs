@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const statePath = process.env.GG_FAKE_GH_STATE;
@@ -102,6 +103,33 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
   if (!comment) process.exit(1);
   comment.body = body.body;
   output = comment;
+} else if (method === 'PUT' && endpoint?.endsWith('/merge')) {
+  const number = Number(endpoint.split('/').at(-2));
+  const pr = state.prs?.find((candidate) => candidate.number === number);
+  if (!pr) process.exit(1);
+  if (state.mergeError) {
+    output = { merged: false, message: state.mergeError };
+  } else {
+    const sha = state.mergeSha;
+    if (!sha) {
+      process.stderr.write('mergeSha is required for fake PR merges\n');
+      process.exit(2);
+    }
+    if (state.mergeRemote) {
+      const update = spawnSync(
+        'git',
+        ['--git-dir', state.mergeRemote, 'update-ref', 'refs/heads/main', sha],
+        { encoding: 'utf8' },
+      );
+      if (update.status !== 0) {
+        process.stderr.write(update.stderr || update.stdout || 'failed to update fake remote\n');
+        process.exit(update.status ?? 2);
+      }
+    }
+    pr.state = 'closed';
+    pr.merged_at = '2026-07-17T00:00:00Z';
+    output = { merged: true, sha };
+  }
 } else if (endpoint === 'graphql') {
   const valid = (state.prs ?? []).some((pr) => pr.node_id === body?.variables?.id);
   output = valid ? { data: {} } : { errors: [{ message: 'invalid node id' }] };

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { buildMoveTreeChoices, type MoveTree } from '../src/move-tree.js';
+import { buildMoveTreeChoices, renderMoveTree, type MoveTree } from '../src/move-tree.js';
 
 describe('buildMoveTreeChoices', () => {
   test('uses one lane for every stack and keeps stacked branches on that lane', () => {
@@ -56,5 +56,11 @@ describe('buildMoveTreeChoices', () => {
     expect(
       buildMoveTreeChoices(tree, [...children.keys()], false).map((choice) => choice.name),
     ).toEqual(['○   left', '│ ○ right', '○─┘ parent', '○   main']);
+    expect(renderMoveTree(tree, [...children.keys()], 'parent', false)).toEqual([
+      '○   left',
+      '│ ○ right',
+      '◉─┘ parent (current)',
+      '○   main',
+    ]);
   });
 });

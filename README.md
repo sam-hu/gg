@@ -5,7 +5,7 @@
 The supported workflow is:
 
 ```text
-init -> branch create/track -> commit/amend -> restack -> move -> sync -> submit
+init -> branch create/track -> commit/amend -> restack -> move -> sync -> submit -> merge
 ```
 
 `gg` is intentionally local-first. Git operations use your existing Git credentials. Pull-request operations prefer an authenticated `gh` CLI and fall back to `GITHUB_TOKEN`. The tool has no account, hosted service, telemetry, or Graphite backend dependency.
@@ -16,7 +16,7 @@ init -> branch create/track -> commit/amend -> restack -> move -> sync -> submit
 - Git 2.38 or newer with `merge-tree --write-tree --merge-base`
 - npm
 - make
-- For `gg submit` and GitHub-aware sync cleanup: authenticated `gh`, or `GITHUB_TOKEN`
+- For `gg submit`, `gg merge`, and GitHub-aware sync cleanup: authenticated `gh`, or `GITHUB_TOKEN`
 
 ## Install from this checkout
 

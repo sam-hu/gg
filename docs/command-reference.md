@@ -70,7 +70,7 @@ The default restacks the current branch's full connected stack segment. A confli
 gg move [-o|--onto <parent>] [-s|--source <branch>] [--only] [-a|--all]
 ```
 
-Without `--onto`, an interactive parent selector excludes the source and its descendants. The choices retain the tracked tree topology: independent stacks use parallel colored lanes, while branches in the same stack share a lane. Type a branch-name prefix to select it, use the arrow keys, or press Escape to cancel. `--only` reparents and restacks former child subtrees first, then moves the source, matching the measured 1.8.6 behavior. `--all` affects interactive selection only; because `gg` configures one active trunk, it currently adds no candidates.
+Without `--onto`, an interactive parent selector excludes the source and its descendants. The choices retain the tracked tree topology: independent stacks use parallel colored lanes, while branches in the same stack share a lane. Use the arrow keys to move, Enter to select, or Escape to cancel. `--only` reparents and restacks former child subtrees first, then moves the source, matching the measured 1.8.6 behavior. `--all` affects interactive selection only; because `gg` configures one active trunk, it currently adds no candidates.
 
 ## Checkout
 
@@ -101,6 +101,16 @@ gg sync [--restack|--no-restack] [-f|--force] [-d|--delete-all] [-a|--all]
 ```
 
 Sync fetches the trunk remote, fast-forwards local trunk when safe, optionally cleans local branches whose GitHub PRs are closed/merged, and restacks every tracked root stack. A conflict warns, skips that subtree, and continues independent stacks.
+
+## Merge
+
+```text
+gg merge
+```
+
+Merge finds the bottommost branch in the checked-out stack and squash-merges its open pull request into trunk through GitHub. It then fetches and fast-forwards local trunk, deletes the merged local branch, reparents its direct children to trunk, and restacks every remaining descendant.
+
+Before merging, the command renders a checkout-style tree containing the current branch's linear path down to trunk and its full descendant tree. The current branch is marked with `◉` and `(current)`. A `Y/n` confirmation directly beneath the tree names the bottommost branch and trunk; yes is the default. Merge is therefore interactive. The worktree must be clean, trunk must be fast-forwardable, and none of the affected branches may be checked out in another worktree.
 
 ## Submit
 

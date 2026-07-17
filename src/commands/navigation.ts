@@ -15,7 +15,7 @@ export async function checkoutBranch(context: RepositoryContext, branch?: string
       .trackedBranches()
       .filter((candidate) => context.git.branchExists(candidate));
     target = await selectWithEscape({
-      message: 'Checkout a branch (type to search, arrow keys, or Esc to cancel)',
+      message: 'Checkout a branch (arrow keys, Enter, or Esc to cancel)',
       choices: buildMoveTreeChoices(graph, candidates),
       default: context.git.tryBranch(),
       pageSize: 12,
