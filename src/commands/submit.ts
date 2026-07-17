@@ -11,7 +11,9 @@ import {
   type GitHubRepository,
   type PullRequest,
 } from '../github.js';
+import type { Output } from '../output.js';
 import { RestackEngine } from '../restack.js';
+import { renderRelation } from '../restack-output.js';
 
 export interface SubmitOptions {
   draft?: boolean;
@@ -43,6 +45,7 @@ interface SubmitPlanItem {
   branch: string;
   base: string;
   localHead: string;
+  codeUnchanged: boolean;
   title: string;
   body: string;
   openPullRequest?: PullRequest;
@@ -91,7 +94,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
       `Running in non-interactive mode. Inline prompts to fill PR fields will be skipped${suffix}.`,
     );
   }
-  output.line('🥞 Validating that this gg stack is ready to submit...');
+  output.line('🥞 Validating stack...');
 
   const repository = resolveSubmissionRepository(git, graph.trunk, anchor);
   if (!repository) {
@@ -143,10 +146,14 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
     const parent = graph.parent(branch);
     if (!parent) continue;
     const openPullRequest = open[0];
+    const localHead = git.head(branch);
     plan.push({
       branch,
       base: parent === graph.trunk ? (options.targetTrunk ?? graph.trunk) : parent,
-      localHead: git.head(branch),
+      localHead,
+      codeUnchanged: Boolean(
+        openPullRequest && graph.get(branch)?.lastSubmittedVersion === localHead,
+      ),
       title: git.capture(['show', '-s', '--format=%s', branch]),
       body: openPullRequest ? withoutLegacyStackDescription(openPullRequest.body) : '',
       ...(openPullRequest ? { openPullRequest } : {}),
@@ -155,21 +162,23 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
 
   for (const item of plan) await editPlanItem(context, item, options);
 
-  for (const item of plan) {
-    output.line(
-      `${options.dryRun ? 'Would submit' : 'Submitting'} ${item.branch} -> ${item.base}${
-        item.openPullRequest ? ` (update PR #${item.openPullRequest.number})` : ' (new PR)'
-      }`,
-    );
+  if (options.dryRun) {
+    renderSubmitPlan(output, plan, 'Would submit');
+    return;
   }
-  if (options.dryRun) return;
 
   const submissionComment = await resolveComment(context, options.comment);
 
   if (options.confirm) {
     context.requireInteractive();
+    renderSubmitPlan(output, plan, 'Ready to submit');
     const approved = await confirm({ message: `Submit ${plan.length} branch(es)?`, default: true });
     if (!approved) throw ggError('Submit cancelled.');
+  }
+
+  if (plan.length > 0) {
+    output.line();
+    output.line(chalk.bold(`Submitting ${plan.length} ${pluralize('branch', plan.length)}`));
   }
 
   const urls: string[] = [];
@@ -178,7 +187,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   let stackCommentsRefreshed = false;
   let submissionError: unknown;
   try {
-    for (const item of plan) {
+    for (const [index, item] of plan.entries()) {
       pushedAnyBranch = (await pushBranch(context, repository, item, options)) || pushedAnyBranch;
       const pullRequest = await reconcilePullRequest(context, client, repository, item, options);
       const reviewers = splitList(options.reviewers);
@@ -198,7 +207,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
       if (options.mergeWhenReady) await client.enableAutoMerge(repository, pullRequest);
       pullRequestsByBranch.set(item.branch, pullRequest);
       urls.push(pullRequest.url);
-      output.line(chalk.blue.underline(pullRequest.url));
+      renderSubmittedItem(output, item, pullRequest, index, plan.length);
     }
   } catch (error) {
     submissionError = error;
@@ -224,10 +233,58 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   }
   if (submissionError) throw submissionError;
 
-  if (urls.length === 0) output.line('No branches required submission.');
+  if (urls.length === 0) {
+    output.line('No branches required submission.');
+  } else {
+    output.line();
+    output.line(`${chalk.green('✔')} ${chalk.bold('Stack submitted.')}`);
+  }
   if (options.view || options.web) {
     output.line('Open the pull request URLs above in your browser.');
   }
+}
+
+function renderSubmitPlan(
+  output: Output,
+  plan: SubmitPlanItem[],
+  heading: 'Would submit' | 'Ready to submit',
+): void {
+  output.line();
+  output.line(chalk.bold(`${heading} ${plan.length} ${pluralize('branch', plan.length)}`));
+  plan.forEach((item, index) => {
+    const connector = index === plan.length - 1 ? '└─' : '├─';
+    const action = item.openPullRequest
+      ? `update PR #${item.openPullRequest.number}`
+      : 'create PR';
+    output.line(
+      `  ${chalk.dim(connector)} ${renderRelation(item.branch, item.base)}  ${chalk.dim(action)}`,
+    );
+  });
+}
+
+function renderSubmittedItem(
+  output: Output,
+  item: SubmitPlanItem,
+  pullRequest: PullRequest,
+  index: number,
+  total: number,
+): void {
+  const last = index === total - 1;
+  const connector = last ? '└─' : '├─';
+  const continuation = last ? '  ' : '│ ';
+  const action = !item.openPullRequest
+    ? chalk.green('(created)')
+    : item.codeUnchanged
+      ? chalk.dim('(unchanged)')
+      : chalk.yellow('(updated)');
+  output.line(
+    `  ${chalk.dim(connector)} ${chalk.green('✔')} ${chalk.bold(`PR #${pullRequest.number}`)}  ${renderRelation(item.branch, item.base)}  ${action}`,
+  );
+  output.line(`  ${chalk.dim(continuation)}   ${chalk.blue.underline(pullRequest.url)}`);
+}
+
+function pluralize(word: string, count: number): string {
+  return count === 1 ? word : `${word}es`;
 }
 
 function canSkipUnchangedSubmit(
@@ -329,7 +386,7 @@ function formatStackComment(
     }),
     `- ${trunk}`,
   ];
-  return `${STACK_COMMENT_MARKER}\n### This pull request is part of the following stack\n\n${rows.join('\n')}\n\n<sub>This stack was generated using [gg](https://github.com/sam-hu/gg)</sub>`;
+  return `${STACK_COMMENT_MARKER}\n### This pull request is part of a stack:\n\n${rows.join('\n')}\n\n<sub>This stack was generated using [gg](https://github.com/sam-hu/gg)</sub>`;
 }
 
 function escapeMarkdownLinkText(value: string): string {

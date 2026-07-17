@@ -42,7 +42,9 @@ describe('track', () => {
 
       const restacked = gg(repo, ['restack', '--only']);
       expectSuccess(restacked);
-      expect(restacked.stdout).toContain('Restacked existing on main.');
+      expect(restacked.stdout).toContain(
+        'Restacked 1 branch\n  └─ existing → main\n\n✔ Stack ready.\n',
+      );
       expect(git(repo, 'merge-base', '--is-ancestor', 'main', 'existing').status).toBe(0);
     });
   });

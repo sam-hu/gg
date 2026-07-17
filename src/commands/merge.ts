@@ -1,4 +1,5 @@
 import { confirm } from '@inquirer/prompts';
+import chalk from 'chalk';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
@@ -9,6 +10,7 @@ import {
 } from '../github.js';
 import { renderMoveTree } from '../move-tree.js';
 import { RestackEngine } from '../restack.js';
+import { renderRelation, renderRestackResult } from '../restack-output.js';
 
 export async function mergeBottomBranch(context: RepositoryContext): Promise<void> {
   await context.ensureInitialized();
@@ -62,11 +64,6 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
   let mergeSha: string | undefined;
   if (pullRequest.state === 'OPEN') {
     mergeSha = (await client.merge(repository, pullRequest, git.head(bottom))).sha;
-    output.line(`Merged PR #${pullRequest.number} for ${bottom} into ${graph.trunk}.`);
-  } else {
-    output.line(
-      `PR #${pullRequest.number} for ${bottom} is already merged; updating the local stack.`,
-    );
   }
 
   fetchTrunk(context, repository.baseRemote, graph.trunk);
@@ -85,9 +82,26 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
   store.updateBranchRevision(graph.trunk, remoteAfter);
   removeMergedBranch(context, bottom, graph.trunk);
 
+  output.line();
+  output.line(
+    `${chalk.green('✔')} ${chalk.bold(
+      pullRequest.state === 'OPEN'
+        ? `Merged PR #${pullRequest.number}`
+        : `PR #${pullRequest.number} was already merged`,
+    )}  ${renderRelation(bottom, graph.trunk)}`,
+  );
+
   if (descendants.length > 0) {
-    output.line('🥞 Restacking remaining branches...');
-    await engine.runQueue(descendants, { command: 'merge', haltOnConflict: true });
+    const relations = descendants.map((branch) => {
+      const parent = store.get(branch)?.parentBranchName;
+      if (!parent) throw ggError(`Tracked metadata for ${branch} has no parent.`);
+      return { branch, parent };
+    });
+    await engine.runQueue(descendants, { command: 'merge', haltOnConflict: true, quiet: true });
+    renderRestackResult(output, relations, true);
+  } else {
+    output.line();
+    renderRestackResult(output, []);
   }
 }
 
@@ -147,7 +161,4 @@ function removeMergedBranch(context: RepositoryContext, branch: string, trunk: s
     if (wasCurrent) context.git.switch(branch);
     throw error;
   }
-
-  for (const child of children) context.output.line(`Set parent of ${child} to ${trunk}.`);
-  context.output.line(`Deleted merged branch ${branch} (previously at ${previous}).`);
 }

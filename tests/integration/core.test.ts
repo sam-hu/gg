@@ -111,8 +111,9 @@ describe('core stacked-branch workflow', () => {
       expectSuccess(gg(repo, ['top']));
       const explicit = gg(repo, ['restack']);
       expectSuccess(explicit);
-      expect(explicit.stdout).toContain('Restacked b on a.');
-      expect(explicit.stdout).toContain('Restacked c on b.');
+      expect(explicit.stdout).toContain(
+        'Restacked 3 branches\n  ├─ a → main\n  ├─ b → a\n  └─ c → b\n\n✔ Stack ready.\n',
+      );
     });
   });
 
@@ -335,6 +336,18 @@ describe('core stacked-branch workflow', () => {
       expect(trunk).toBeGreaterThan(first);
       expect(log.stdout.match(/ - first feature commit/g)).toHaveLength(1);
       expect(log.stdout.match(/ - second feature commit/g)).toHaveLength(1);
+
+      const repeated = gg(repo, ['--debug', 'l']);
+      expectSuccess(repeated);
+      const stableOutput = (output: string): string =>
+        output
+          .split('\n')
+          .filter((line) => !/\b(?:ago|from now)$/.test(line))
+          .join('\n');
+      expect(stableOutput(repeated.stdout)).toBe(stableOutput(log.stdout));
+      expect(repeated.stderr).not.toContain('git show-ref');
+      expect(repeated.stderr).not.toContain('git merge-base --is-ancestor');
+      expect(repeated.stderr.match(/git for-each-ref/g)).toHaveLength(1);
     });
   });
 

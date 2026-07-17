@@ -23,16 +23,28 @@ describe('merge', () => {
       const { repo, bare, mergeSha, env } = createSubmittedStack(root);
       expectSuccess(gg(repo, ['bottom']));
 
-      const result = await runInteractiveMerge(repo, env, '\r');
+      const result = await runInteractiveMerge(repo, { ...env, FORCE_COLOR: '1' }, '\r');
       expectSuccess(result);
+      const plainOutput = stripVTControlCharacters(result.stdout);
       expect(normalizePromptOutput(result.stdout)).toContain(
         'a will be merged into main and this tree will be restacked. Confirm? (Y/n)',
       );
-      expect(result.stdout).toContain('◉ a (current)');
-      expect(result.stdout).toContain('Merged PR #1 for a into main.');
-      expect(result.stdout).toContain('Set parent of b to main.');
-      expect(result.stdout).toContain('Restacked b on main.');
-      expect(result.stdout).toContain('Restacked c on b.');
+      expect(plainOutput).toContain('◉ a (current)');
+      expect(plainOutput).toContain(
+        [
+          '✔ Merged PR #1  a → main',
+          '',
+          'Restacked 2 branches',
+          '  ├─ b → main',
+          '  └─ c → b',
+          '',
+          '✔ Stack ready.',
+        ].join('\n'),
+      );
+      expect(plainOutput).not.toContain('Branches to restack:');
+      expect(plainOutput).not.toContain('Local stack updated');
+      expect(result.stdout).toContain('\u001b[32m✔\u001b[39m');
+      expect(result.stdout).toContain('\u001b[36ma\u001b[39m');
       expect(head(repo, 'main')).toBe(mergeSha);
       expect(head(bare, 'main')).toBe(mergeSha);
       expect(git(repo, 'branch', '--show-current').stdout.trim()).toBe('main');
@@ -87,7 +99,7 @@ describe('merge', () => {
       expect(promptOutput).toContain(
         'a will be merged into main and this tree will be restacked. Confirm? (Y/n)',
       );
-      expect(accepted.stdout).toContain('Merged PR #1 for a into main.');
+      expect(accepted.stdout).toContain('✔ Merged PR #1  a → main');
       expect(git(repo, 'branch', '--show-current').stdout.trim()).toBe('b');
       expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/a').status).toBe(1);
       expect(stateFrom(env).calls.some((call: any) => call.method === 'PUT')).toBe(true);
