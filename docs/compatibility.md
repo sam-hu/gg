@@ -8,6 +8,7 @@ Reference behavior was researched against the locally installed Graphite CLI `gt
 | ---------------------------------- | ----------------------------------------------------------------- | ------------------------------------- |
 | `gg init`                          | `gt init`                                                         | Implemented                           |
 | `gg branch create`, `gg bc`        | hidden/deprecated `gt branch create`, `gt bc`; modern `gt create` | Implemented                           |
+| `gg track`                         | `gt track`                                                        | Implemented for one branch at a time  |
 | `gg up/down/top/bottom`            | same                                                              | Implemented                           |
 | `gg commit create`, `gg cc`        | hidden/deprecated forms; equivalent to `gt modify -c`             | Implemented                           |
 | `gg commit amend`, `gg ca`         | hidden/deprecated forms; equivalent to `gt modify`                | Implemented                           |
@@ -27,6 +28,7 @@ The legacy branch/commit groups still execute in `gt 1.8.6`, but Graphite hides 
 | Metadata        | Equivalent branch graph, trunk JSON, PR cache data, modes, and legacy-ref import                                                      | Files use the independent `.gg_*` namespace; `.gg_operation_state` adds rollback data                     |
 | Initialization  | Explicit/inferred trunk, reinitialization, zero-branch failure, reset                                                                 | Interactive text is close rather than byte-for-byte                                                       |
 | Branch creation | durable parent, empty branch, staging flags, generated names, insert ordering                                                         | Insert is applied child-by-child rather than as one abortable multi-child transaction                     |
+| Branch tracking | current or named existing branch, explicit or interactive parent, merge-base recording, metadata repair, cycle rejection              | Recursive tracking and `--force` ancestor inference are not currently implemented                         |
 | Navigation      | metadata-based movement, clamped steps, ambiguity handling, hints                                                                     | Decorative output is simplified                                                                           |
 | Commit          | create/amend, staging, message/edit options, descendant replay, warn-only conflict                                                    | `--into` and `--interactive-rebase` are explicitly unsupported                                            |
 | Restack         | stored-base replay, empty commits, dirty tolerance for non-current branches, conflict halt/continue/abort, cross-worktree journal     | Merge commits fall back to normal rebase conflict handling                                                |

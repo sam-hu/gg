@@ -308,7 +308,9 @@ describe('core stacked-branch workflow', () => {
       const colored = gg(repo, ['l'], { FORCE_COLOR: '1' });
       expectSuccess(colored);
       expect(colored.stdout).toContain('\u001b[36m');
-      expect(colored.stdout).toContain('\u001b[34m');
+      expect(colored.stdout).toContain('\u001b[94m');
+      expect(colored.stdout).toContain('\u001b[37m');
+      expect(colored.stdout).toContain('\u001b[90m');
     });
   });
 

@@ -1,4 +1,5 @@
 import { confirm, editor, input } from '@inquirer/prompts';
+import chalk from 'chalk';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
@@ -45,6 +46,8 @@ interface SubmitPlanItem {
   body: string;
   openPullRequest?: PullRequest;
 }
+
+const STACK_COMMENT_MARKER = '<!-- gg-stack-comment -->';
 
 export async function submit(context: RepositoryContext, options: SubmitOptions): Promise<void> {
   await context.ensureInitialized();
@@ -132,15 +135,14 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
     if (options.updateOnly && open.length === 0) continue;
     const parent = graph.parent(branch);
     if (!parent) continue;
+    const openPullRequest = open[0];
     plan.push({
       branch,
       base: parent === graph.trunk ? (options.targetTrunk ?? graph.trunk) : parent,
       localHead: git.head(branch),
       title: git.capture(['show', '-s', '--format=%s', branch]),
-      body: `Stacked branch: \`${branch}\`\n\nBase: \`${
-        parent === graph.trunk ? (options.targetTrunk ?? graph.trunk) : parent
-      }\``,
-      ...(open[0] ? { openPullRequest: open[0] } : {}),
+      body: openPullRequest ? withoutLegacyStackDescription(openPullRequest.body) : '',
+      ...(openPullRequest ? { openPullRequest } : {}),
     });
   }
 
@@ -164,37 +166,122 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   }
 
   const urls: string[] = [];
-  for (const item of plan) {
-    await pushBranch(context, repository, item, options);
-    const pullRequest = await reconcilePullRequest(context, client, repository, item, options);
-    const reviewers = splitList(options.reviewers);
-    const teams = splitList(options.teamReviewers);
-    if (options.rerequestReview && item.openPullRequest) {
-      reviewers.push(...(await client.reviewersForRerequest(repository, item.openPullRequest)));
-      reviewers.push(...item.openPullRequest.requestedReviewers);
-      teams.push(...item.openPullRequest.requestedTeams);
+  const pullRequestsByBranch = new Map<string, PullRequest>();
+  let pushedAnyBranch = false;
+  let submissionError: unknown;
+  try {
+    for (const item of plan) {
+      pushedAnyBranch = (await pushBranch(context, repository, item, options)) || pushedAnyBranch;
+      const pullRequest = await reconcilePullRequest(context, client, repository, item, options);
+      const reviewers = splitList(options.reviewers);
+      const teams = splitList(options.teamReviewers);
+      if (options.rerequestReview && item.openPullRequest) {
+        reviewers.push(...(await client.reviewersForRerequest(repository, item.openPullRequest)));
+        reviewers.push(...item.openPullRequest.requestedReviewers);
+        teams.push(...item.openPullRequest.requestedTeams);
+      }
+      await client.requestReviewers(
+        repository,
+        pullRequest,
+        [...new Set(reviewers)],
+        [...new Set(teams)],
+      );
+      if (submissionComment) await client.comment(repository, pullRequest, submissionComment);
+      if (options.mergeWhenReady) await client.enableAutoMerge(repository, pullRequest);
+      const row = store.get(item.branch);
+      if (row) {
+        row.lastSubmittedVersion = item.localHead;
+        store.put(row);
+      }
+      pullRequestsByBranch.set(item.branch, pullRequest);
+      urls.push(pullRequest.url);
+      output.line(chalk.blue.underline(pullRequest.url));
     }
-    await client.requestReviewers(
-      repository,
-      pullRequest,
-      [...new Set(reviewers)],
-      [...new Set(teams)],
-    );
-    if (submissionComment) await client.comment(repository, pullRequest, submissionComment);
-    if (options.mergeWhenReady) await client.enableAutoMerge(repository, pullRequest);
-    const row = store.get(item.branch);
-    if (row) {
-      row.lastSubmittedVersion = item.localHead;
-      store.put(row);
-    }
-    urls.push(pullRequest.url);
-    output.line(pullRequest.url);
+  } catch (error) {
+    submissionError = error;
   }
+
+  if (!submissionError || pushedAnyBranch) {
+    try {
+      await refreshStackComments(client, repository, graph, pullRequestsByBranch);
+    } catch (error) {
+      if (!submissionError) throw error;
+      output.warning('Could not refresh stack comments after the partial submission.');
+    }
+  }
+  if (submissionError) throw submissionError;
 
   if (urls.length === 0) output.line('No branches required submission.');
   if (options.view || options.web) {
     output.line('Open the pull request URLs above in your browser.');
   }
+}
+
+async function refreshStackComments(
+  client: GitHubClient,
+  repository: GitHubRepository,
+  graph: StackGraph,
+  knownPullRequests: Map<string, PullRequest>,
+): Promise<void> {
+  const openPullRequests = new Map(knownPullRequests);
+  for (const branch of graph.allRestackOrder()) {
+    if (openPullRequests.has(branch)) continue;
+    const open = (await client.listForHead(repository, branch)).filter(
+      (pullRequest) => pullRequest.state === 'OPEN',
+    );
+    if (open.length > 1) {
+      throw ggError(
+        `Multiple open pull requests exist for ${branch}:\n${open.map((pullRequest) => `${pullRequest.number}: ${pullRequest.url}`).join('\n')}`,
+      );
+    }
+    if (open[0]) openPullRequests.set(branch, open[0]);
+  }
+
+  for (const root of graph.children(graph.trunk)) {
+    const stack = graph
+      .descendants(root, true)
+      .map((branch) => ({ branch, pullRequest: openPullRequests.get(branch) }))
+      .filter(
+        (item): item is { branch: string; pullRequest: PullRequest } =>
+          item.pullRequest !== undefined,
+      );
+    if (stack.length === 0) continue;
+
+    for (const current of stack) {
+      const body = formatStackComment(graph.trunk, stack, current.branch);
+      const comments = await client.listComments(repository, current.pullRequest);
+      const managed = comments.find((comment) => comment.body.startsWith(STACK_COMMENT_MARKER));
+      if (managed) {
+        await client.updateComment(repository, managed, body);
+      } else {
+        await client.comment(repository, current.pullRequest, body);
+      }
+    }
+  }
+}
+
+function formatStackComment(
+  trunk: string,
+  stack: Array<{ branch: string; pullRequest: PullRequest }>,
+  currentBranch: string,
+): string {
+  const rows = [
+    `- ${trunk}`,
+    ...stack.map(({ branch, pullRequest }) => {
+      const title = escapeMarkdownLinkText(pullRequest.title.replace(/\s+/g, ' ').trim());
+      const link = `[#${pullRequest.number} ${title}](${pullRequest.url})`;
+      return `- ${branch === currentBranch ? `**${link}** 👈 (This PR)` : link}`;
+    }),
+  ];
+  return `${STACK_COMMENT_MARKER}\n### Stack\n\nThis pull request is part of the following stack:\n\n${rows.join('\n')}`;
+}
+
+function escapeMarkdownLinkText(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
+}
+
+function withoutLegacyStackDescription(body: string): string {
+  return body.replace(/^Stacked branch: `[^`\r\n]+`\r?\n\r?\nBase: `[^`\r\n]+`(?:\r?\n\r?\n)?/, '');
 }
 
 function submitScope(graph: StackGraph, anchor: string, includeDescendants: boolean): string[] {
@@ -219,7 +306,7 @@ async function pushBranch(
   repository: GitHubRepository,
   item: SubmitPlanItem,
   options: SubmitOptions,
-): Promise<void> {
+): Promise<boolean> {
   const { git } = context;
   const remoteRef = `refs/heads/${item.branch}`;
   const result = git.run(['ls-remote', '--heads', repository.pushUrl, remoteRef], {
@@ -227,11 +314,11 @@ async function pushBranch(
   });
   if (result.status !== 0) throw ggError(`Could not inspect remote branch ${item.branch}.`);
   const remoteHead = result.stdout.trim().split(/\s+/)[0] || undefined;
-  if (remoteHead === item.localHead && !options.always) return;
+  if (remoteHead === item.localHead && !options.always) return false;
   const refspec = `refs/heads/${item.branch}:${remoteRef}`;
   if (!remoteHead || git.isAncestor(remoteHead, item.localHead)) {
     git.run(['push', repository.remote, refspec]);
-    return;
+    return true;
   }
 
   let approvedLease = options.force ?? false;
@@ -247,6 +334,7 @@ async function pushBranch(
     );
   }
   git.run(['push', `--force-with-lease=${remoteRef}:${remoteHead}`, repository.remote, refspec]);
+  return true;
 }
 
 async function reconcilePullRequest(

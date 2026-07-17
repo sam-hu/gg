@@ -2,6 +2,8 @@ import { checkbox, select } from '@inquirer/prompts';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
 import type { RepositoryContext } from '../context.js';
+import { buildMoveTreeChoices } from '../move-tree.js';
+import { selectWithEscape } from '../prompts.js';
 import { RestackEngine } from '../restack.js';
 
 export interface BranchCreateOptions {
@@ -12,6 +14,61 @@ export interface BranchCreateOptions {
   insert?: boolean;
   onto?: string;
   verbose?: number;
+}
+
+export interface TrackOptions {
+  parent?: string;
+}
+
+export async function trackBranch(
+  context: RepositoryContext,
+  suppliedBranch: string | undefined,
+  options: TrackOptions,
+): Promise<void> {
+  await context.ensureInitialized();
+  const { git, store, output } = context;
+  new RestackEngine(git, store, output, context.verify).ensureNotBlocked();
+  const graph = new StackGraph(git, store);
+  const branch = suppliedBranch ?? git.branch();
+
+  if (!git.branchExists(branch)) throw ggError(`Could not find branch ${branch}.`);
+  if (branch === graph.trunk)
+    throw ggError('Cannot track the trunk branch beneath another branch.');
+
+  let parent = options.parent;
+  if (!parent) {
+    context.requireInteractive();
+    const excluded = new Set([branch, ...graph.descendants(branch)]);
+    const candidates = graph
+      .trackedBranches()
+      .filter((candidate) => !excluded.has(candidate) && git.branchExists(candidate));
+    parent = await selectWithEscape({
+      message: `Choose a parent for ${branch} (type to search, arrow keys, or Esc to cancel)`,
+      choices: buildMoveTreeChoices(graph, candidates),
+      default: graph.parent(branch) ?? graph.trunk,
+      pageSize: 12,
+    });
+    if (!parent) {
+      output.line('Tracking cancelled.');
+      return;
+    }
+  }
+
+  if (!git.branchExists(parent)) throw ggError(`Could not find branch ${parent}.`);
+  graph.require(parent);
+  if (parent === branch) throw ggError('A branch cannot be its own parent.');
+  if (graph.get(branch) && graph.isDescendant(parent, branch)) {
+    throw ggError(`Cannot track ${branch} onto ${parent} because it is a child of ${branch}.`);
+  }
+
+  const mergeBase = git.run(['merge-base', parent, branch], { allowFailure: true });
+  const parentRevision = mergeBase.stdout.trim();
+  if (mergeBase.status !== 0 || !parentRevision) {
+    throw ggError(`Branches ${branch} and ${parent} do not share any history.`);
+  }
+
+  store.track(branch, parent, parentRevision, git.head(branch));
+  output.line(`Tracked ${branch} with parent ${parent}.`);
 }
 
 export async function createBranch(
