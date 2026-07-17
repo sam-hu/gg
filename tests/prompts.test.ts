@@ -24,6 +24,7 @@ describe('selectWithEscape', () => {
 
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(rendered).toContain('ACTIVE main');
+    expect(rendered).not.toContain('? Choose a branch');
     const startedAt = performance.now();
     input.write('\u001b');
 
@@ -31,30 +32,34 @@ describe('selectWithEscape', () => {
     expect(performance.now() - startedAt).toBeLessThan(250);
   });
 
-  test('searches raw branch names when choices contain graph decoration', async () => {
+  test('ignores typed characters and moves only with arrow keys', async () => {
     const input = new PassThrough();
     const output = new PassThrough();
+    let rendered = '';
+    output.setEncoding('utf8');
+    output.on('data', (chunk: string) => {
+      rendered += chunk;
+    });
     const selection = selectWithEscape(
       {
         message: 'Choose a branch',
         choices: [
-          { name: '○     main', searchName: 'main', short: 'main', value: 'main' },
-          {
-            name: '│  ○  query-branch',
-            searchName: 'query-branch',
-            short: 'query-branch',
-            value: 'query-branch',
-          },
+          { name: '○     main', short: 'main', value: 'main' },
+          { name: '│  ○  query-one', short: 'query-one', value: 'query-one' },
+          { name: '│  ○  query-two', short: 'query-two', value: 'query-two' },
         ],
       },
       { input, output },
     );
 
     await new Promise<void>((resolve) => setImmediate(resolve));
-    input.write('q');
+    input.write('query-two');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(rendered).not.toContain('Search:');
+    input.write('\u001b[B');
     await new Promise<void>((resolve) => setImmediate(resolve));
     input.write('\r');
 
-    await expect(selection).resolves.toBe('query-branch');
+    await expect(selection).resolves.toBe('query-one');
   });
 });

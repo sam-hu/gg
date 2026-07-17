@@ -62,10 +62,8 @@ describe('branch checkout', () => {
       });
 
       await waitFor(() => stdout.includes('Checkout a branch'));
-      for (const character of 'stack2') {
-        child.stdin.write(character);
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
+      child.stdin.write('\u001b[A');
+      await new Promise<void>((resolve) => setImmediate(resolve));
       child.stdin.end('\r');
       const [code] = (await once(child, 'exit')) as [number | null];
 

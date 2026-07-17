@@ -13,7 +13,9 @@ flowchart LR
   Replay --> Journal["Operation snapshot and .gg_continue state"]
   Planner --> Sync["Fetch and multi-stack sync"]
   Planner --> Submit["GitHub submit planner"]
+  Planner --> Merge["GitHub merge and local restack"]
   Submit --> GH["gh CLI or GitHub REST API"]
+  Merge --> GH
 ```
 
 The CLI finds the repository with `git rev-parse --show-toplevel`, so every command works from nested directories. The configured trunk and durable branch relationships come from files in the repository's common Git directory, not from branch naming or guessed commit ancestry.
@@ -79,6 +81,10 @@ Stack comments are rebuilt by connected root stack after every successful submis
 
 Before GitHub authentication, an ordinary submit compares every selected local head with its last submitted version and verifies that the stored parent revision is still current. If all match, it exits with one unchanged-status line and performs no remote or metadata operations. Options that request an explicit GitHub or presentation action bypass this fast path.
 
+## Merge boundary
+
+`gg merge` first reuses the checkout topology renderer to show the current branch's ancestor path through trunk and its descendant subtree, then requires a default-yes confirmation. It performs the irreversible GitHub operation only after validating the tracked stack, clean worktree, linked-worktree ownership, and fast-forward relationship between local and remote trunk. The merge request pins the expected PR head SHA and uses GitHub's squash method. After GitHub reports success, gg fetches trunk, removes the merged bottom branch locally, reparents its children, and uses the normal durable restack journal for the remaining descendants. A rerun can finish local cleanup when GitHub already reports the PR as merged.
+
 ## Trace-free local installation
 
 `make install` copies the current source into an owned temporary directory, runs the locked build there with an isolated npm home/cache/config, packages it, and installs only the runtime package under `~/.local/share/gg`. Every run replaces an existing managed installation so local development updates take effect. The replacement is staged and validated before the previous package is swapped out; failures restore the previous package. The user-facing `~/.local/bin/gg` is created only after the staged executable passes `--help` validation. An exclusive ownership-marked lock serializes install operations, and signal/failure handlers remove owned staging trees.
@@ -89,7 +95,7 @@ This trace-free guarantee covers files created by installation. Stack metadata w
 
 ## Safety invariants
 
-- Never merge or push directly to trunk.
+- Never push or perform a local direct merge to trunk; trunk changes arrive through a GitHub PR and fetch.
 - Never use `git reset --hard`, `git clean`, or an unleased forced push.
 - Reject cycles and self-parenting before mutation.
 - Never infer the durable stack solely from commit ancestry.
