@@ -122,6 +122,27 @@ describe('sync', () => {
 });
 
 describe('GitHub submission through an offline fake gh', () => {
+  test('creates new PRs as drafts in interactive mode by default', async () => {
+    await withTempRoot('submit-interactive-draft', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'feature.txt', 'feature\n');
+      expectSuccess(gg(repo, ['bc', 'feature', '--all', '-m', 'Feature']));
+
+      const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 1 });
+      const result = command(
+        process.execPath,
+        [path.resolve('dist/cli.js'), '--cwd', repo, '--interactive', 'submit'],
+        { cwd: repo, env },
+      );
+      expectSuccess(result);
+      expect(stateFrom(env).prs).toHaveLength(1);
+      expect(stateFrom(env).prs[0].draft).toBe(true);
+    });
+  });
+
   test('submits a full stack, bases PRs correctly, and updates without duplicates', async () => {
     await withTempRoot('submit', (root) => {
       const repo = initRepo(root);

@@ -247,7 +247,7 @@ function configureCommitCommon(command: Command): Command {
 
 function configureSubmit(command: Command, stackDefault: boolean): void {
   command
-    .option('-d, --draft', 'create new pull requests as drafts')
+    .option('-d, --draft', 'create new pull requests as drafts (default)')
     .option('-p, --publish', 'publish draft pull requests')
     .option('--restack', 'restack before submitting')
     .option('-e, --edit', 'edit pull request fields')

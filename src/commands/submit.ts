@@ -474,7 +474,7 @@ async function reconcilePullRequest(
       body,
       head: `${repository.headOwner}:${item.branch}`,
       base: item.base,
-      draft: options.publish ? false : (options.draft ?? !context.interactive),
+      draft: !options.publish,
     });
   }
   if (options.publish) await client.publish(repository, pullRequest);
