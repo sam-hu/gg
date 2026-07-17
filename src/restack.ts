@@ -6,6 +6,7 @@ import type { Git } from './git.js';
 import { StackGraph } from './graph.js';
 import { atomicWrite, type MetadataSnapshot, type MetadataStore } from './metadata.js';
 import type { Output } from './output.js';
+import { renderRestackResult } from './restack-output.js';
 
 interface ReplaySuccess {
   kind: 'success';
@@ -47,6 +48,7 @@ export interface OperationState {
 export interface RestackQueueOptions {
   command: string;
   haltOnConflict: boolean;
+  quiet?: boolean;
   warnOnConflict?: (branch: string, parent: string) => void;
 }
 
@@ -74,7 +76,13 @@ export class RestackEngine {
     const graph = new StackGraph(this.git, this.store);
     graph.require(branch);
     const queue = graph.restackOrder(branch, scope);
-    await this.runQueue(queue, { command, haltOnConflict: true });
+    const relations = queue.map((name) => {
+      const parent = graph.parent(name);
+      if (!parent) throw ggError(`Tracked metadata for ${name} has no parent.`);
+      return { branch: name, parent };
+    });
+    await this.runQueue(queue, { command, haltOnConflict: true, quiet: true });
+    renderRestackResult(this.output, relations);
   }
 
   async restackDescendantsWithoutHalting(
@@ -139,7 +147,7 @@ export class RestackEngine {
     if (current && queue.includes(current) && this.git.hasStagedChanges()) {
       throw ggError(`Cannot restack checked out branch ${current} with changes staged.`);
     }
-    this.announceQueue(queue, 'Branches to restack:');
+    if (!options.quiet) this.announceQueue(queue, 'Branches to restack:');
     const state = this.createState(options.command, queue);
     this.writeState(state);
     try {
@@ -492,11 +500,13 @@ export class RestackEngine {
       if (newBase === row.parentBranchRevision) {
         this.prepareMetadataExpectation(state, branch, newBase, oldHead, pendingParent);
         this.store.updateAfterRestack(branch, newBase, oldHead, pendingParent);
-        this.output.line(
-          pendingParent
-            ? `Restacked ${branch} on ${effectiveParent}.`
-            : `${branch} does not need to be restacked on ${effectiveParent}.`,
-        );
+        if (!options.quiet) {
+          this.output.line(
+            pendingParent
+              ? `Restacked ${branch} on ${effectiveParent}.`
+              : `${branch} does not need to be restacked on ${effectiveParent}.`,
+          );
+        }
         this.commitMetadataExpectation(state);
         delete state.active;
         this.writeState(state);
@@ -514,7 +524,7 @@ export class RestackEngine {
         this.moveBranch(branch, replay.head, oldHead);
         this.store.updateAfterRestack(branch, newBase, replay.head, pendingParent);
         this.commitMetadataExpectation(state);
-        this.output.line(`Restacked ${branch} on ${effectiveParent}.`);
+        if (!options.quiet) this.output.line(`Restacked ${branch} on ${effectiveParent}.`);
         delete state.active;
         this.writeState(state);
         continue;
@@ -523,11 +533,15 @@ export class RestackEngine {
         options.warnOnConflict?.(branch, effectiveParent);
         return;
       }
-      await this.materializeConflict(state, active);
+      await this.materializeConflict(state, active, options.quiet ?? false);
     }
   }
 
-  async materializeConflict(state: OperationState, active: ActiveRebase): Promise<void> {
+  async materializeConflict(
+    state: OperationState,
+    active: ActiveRebase,
+    quiet = false,
+  ): Promise<void> {
     if (this.git.hasAnyChanges()) {
       throw ggError(
         `Cannot expose the rebase conflict for ${active.branch} while the worktree has changes. Commit or stash them, then rerun gg restack.`,
@@ -560,7 +574,7 @@ export class RestackEngine {
       );
       this.store.updateAfterRestack(active.branch, active.newBase, head, active.pendingParent);
       this.commitMetadataExpectation(state);
-      this.output.line(`Restacked ${active.branch} on ${active.parent}.`);
+      if (!quiet) this.output.line(`Restacked ${active.branch} on ${active.parent}.`);
       delete state.active;
       this.writeState(state);
       return;

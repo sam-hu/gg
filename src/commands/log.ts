@@ -19,6 +19,14 @@ export async function showLog(
   options: LogOptions,
 ): Promise<void> {
   await context.ensureInitialized();
+  context.git.withReadCache(() => renderLog(context, style, options));
+}
+
+function renderLog(
+  context: RepositoryContext,
+  style: 'default' | 'short' | 'long',
+  options: LogOptions,
+): void {
   const lines: string[] = [];
   let graph = new StackGraph(context.git, context.store);
   const validation = graph.refresh();
@@ -152,8 +160,7 @@ function renderDefaultBranch(
     lines.push(chalk.white(`${prefix}│`));
     return;
   }
-  const age = context.git.capture(['show', '-s', '--format=%cr', branch]);
-  const commits = commitsForBranch(context, graph, branch, revision);
+  const { age, commits } = detailsForBranch(context, graph, branch, revision);
   lines.push(`${chalk.white(`${prefix}│ `)}${chalk.gray(age)}`);
   lines.push(chalk.white(`${prefix}│ `));
   for (const commit of commits) {
@@ -164,34 +171,46 @@ function renderDefaultBranch(
   lines.push(chalk.white(`${prefix}│`));
 }
 
-function commitsForBranch(
+function detailsForBranch(
   context: RepositoryContext,
   graph: StackGraph,
   branch: string,
   revision: string,
-): { revision: string; subject: string }[] {
+): { age: string; commits: { revision: string; subject: string }[] } {
   const parent = graph.parent(branch);
-  if (!parent) {
-    const subject = context.git.capture(['show', '-s', '--format=%s', branch]);
-    return [{ revision, subject }];
-  }
-
-  const output = context.git.capture([
-    'log',
-    '--format=%H%x00%s',
-    `refs/heads/${parent}..refs/heads/${branch}`,
-    '--',
-  ]);
-  return output
+  const output = parent
+    ? context.git.capture([
+        'log',
+        '--format=%cr%x00%H%x00%s',
+        `refs/heads/${parent}..refs/heads/${branch}`,
+        '--',
+      ])
+    : context.git.capture(['show', '-s', '--format=%cr%x00%H%x00%s', branch]);
+  const records = output
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const separator = line.indexOf('\0');
+      const ageSeparator = line.indexOf('\0');
+      const revisionSeparator = line.indexOf('\0', ageSeparator + 1);
       return {
-        revision: line.slice(0, separator),
-        subject: line.slice(separator + 1),
+        age: line.slice(0, ageSeparator),
+        revision: line.slice(ageSeparator + 1, revisionSeparator),
+        subject: line.slice(revisionSeparator + 1),
       };
     });
+  if (records.length === 0) {
+    return {
+      age: context.git.capture(['show', '-s', '--format=%cr', branch]),
+      commits: [],
+    };
+  }
+  return {
+    age: records[0]!.age,
+    commits: records.map(({ revision: commitRevision, subject }) => ({
+      revision: commitRevision || revision,
+      subject,
+    })),
+  };
 }
 
 function renderLong(context: RepositoryContext, lines: string[]): void {

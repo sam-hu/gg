@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { stripVTControlCharacters } from 'node:util';
 import { describe, expect, test } from 'vitest';
 import {
   command,
@@ -136,6 +137,17 @@ describe('GitHub submission through an offline fake gh', () => {
       const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 101 });
       const first = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
       expectSuccess(first);
+      expect(stripVTControlCharacters(first.stdout)).toContain(
+        [
+          'Submitting 2 branches',
+          '  ├─ ✔ PR #101  a → main  created',
+          '  │    https://github.com/owner/repo/pull/101',
+          '  └─ ✔ PR #102  b → a  created',
+          '       https://github.com/owner/repo/pull/102',
+          '',
+          '✔ Stack submitted.',
+        ].join('\n'),
+      );
       expect(first.stdout).toContain('https://github.com/owner/repo/pull/101');
       expect(first.stdout).toContain('\u001b[34m');
       expect(first.stdout).toContain('\u001b[4m');
@@ -186,7 +198,12 @@ describe('GitHub submission through an offline fake gh', () => {
       changed.prs[1].base.ref = 'main';
       const statePath = env.GG_FAKE_GH_STATE!;
       writeFileSync(statePath, JSON.stringify(changed, null, 2));
-      expectSuccess(gg(repo, ['submit', '--stack', '--always'], env));
+      const updated = gg(repo, ['submit', '--stack', '--always'], env);
+      expectSuccess(updated);
+      expect(stripVTControlCharacters(updated.stdout)).toContain(
+        '├─ ✔ PR #101  a → main  updated',
+      );
+      expect(stripVTControlCharacters(updated.stdout)).toContain('└─ ✔ PR #102  b → a  updated');
       expect(stateFrom(env).prs[1].base.ref).toBe('a');
       expect(stateFrom(env).prs.map((pr: any) => pr.body)).toEqual(['Human-authored notes.', '']);
 

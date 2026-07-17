@@ -52,6 +52,8 @@ export class Git {
   readonly gitDir: string;
   readonly commonGitDir: string;
   private readonly debug: boolean;
+  private readCache: Map<string, GitResult> | undefined;
+  private branchHeadCache: Map<string, string> | undefined;
 
   private constructor(root: string, gitDir: string, commonGitDir: string, debug: boolean) {
     this.root = root;
@@ -76,10 +78,33 @@ export class Git {
   }
 
   run(args: string[], options: GitRunOptions = {}): GitResult {
+    const cacheKey =
+      this.readCache && isCacheableRead(options) ? JSON.stringify([args, options]) : undefined;
+    if (cacheKey) {
+      const cached = this.readCache?.get(cacheKey);
+      if (cached) return cached;
+    }
     if (this.debug) {
       process.stderr.write(`[debug] git ${args.map(redactArgument).join(' ')}\n`);
     }
-    return runProcess(this.root, args, options);
+    const result = runProcess(this.root, args, options);
+    if (cacheKey) this.readCache?.set(cacheKey, result);
+    return result;
+  }
+
+  withReadCache<T>(callback: () => T): T {
+    // Scope snapshots to callers that do not mutate refs so every command starts
+    // from fresh repository state while repeated reads avoid new Git processes.
+    const previousReadCache = this.readCache;
+    const previousBranchHeadCache = this.branchHeadCache;
+    this.readCache = new Map();
+    this.branchHeadCache = this.loadBranchHeads();
+    try {
+      return callback();
+    } finally {
+      this.readCache = previousReadCache;
+      this.branchHeadCache = previousBranchHeadCache;
+    }
   }
 
   capture(args: string[], options: Omit<GitRunOptions, 'stdout' | 'stderr'> = {}): string {
@@ -104,19 +129,25 @@ export class Git {
   }
 
   branchExists(branch: string): boolean {
+    if (this.branchHeadCache) return this.branchHeadCache.has(branch);
     return this.succeeds(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
   }
 
   branches(): string[] {
+    if (this.branchHeadCache) return [...this.branchHeadCache.keys()];
     const output = this.capture(['for-each-ref', '--format=%(refname:short)', 'refs/heads']);
     return output ? output.split('\n').filter(Boolean) : [];
   }
 
   head(revision = 'HEAD'): string {
+    const cached = this.branchHeadCache?.get(revision);
+    if (cached) return cached;
     return this.capture(['rev-parse', '--verify', `${revision}^{commit}`]);
   }
 
   tryHead(revision: string): string | undefined {
+    const cached = this.branchHeadCache?.get(revision);
+    if (cached) return cached;
     const result = this.run(['rev-parse', '--verify', `${revision}^{commit}`], {
       allowFailure: true,
     });
@@ -180,6 +211,31 @@ export class Git {
     }
     return false;
   }
+
+  private loadBranchHeads(): Map<string, string> {
+    const output = this.capture([
+      'for-each-ref',
+      '--format=%(refname:short)%00%(objectname)',
+      'refs/heads',
+    ]);
+    const heads = new Map<string, string>();
+    for (const line of output.split('\n')) {
+      const separator = line.indexOf('\0');
+      if (separator < 0) continue;
+      heads.set(line.slice(0, separator), line.slice(separator + 1));
+    }
+    return heads;
+  }
+}
+
+function isCacheableRead(options: GitRunOptions): boolean {
+  return (
+    options.env === undefined &&
+    options.input === undefined &&
+    options.stdin === undefined &&
+    options.stdout === undefined &&
+    options.stderr === undefined
+  );
 }
 
 function redactArgument(value: string): string {

@@ -17,41 +17,55 @@ export class StackGraph {
   refresh(): { diverged: string[]; missing: string[] } {
     const diverged: string[] = [];
     const missing: string[] = [];
-    for (const row of this.rows.values()) {
-      const head = this.git.tryHead(row.branchName);
-      if (!head) {
-        row.validationResult = 'BAD_PARENT_NAME';
-        missing.push(row.branchName);
+    this.store.transaction(() => {
+      for (const row of this.rows.values()) {
+        const previousHead = row.branchRevision;
+        const head = this.git.tryHead(row.branchName);
+        if (!head) {
+          row.validationResult = 'BAD_PARENT_NAME';
+          missing.push(row.branchName);
+          this.store.put(row);
+          continue;
+        }
+        row.branchRevision = head;
+        if (row.branchName === this.trunk) {
+          row.validationResult = 'TRUNK';
+          row.parentHeadRevision = null;
+          this.store.put(row);
+          continue;
+        }
+        const parentHead = row.parentBranchName
+          ? this.git.tryHead(row.parentBranchName)
+          : undefined;
+        if (!row.parentBranchName || !parentHead) {
+          row.validationResult = 'BAD_PARENT_NAME';
+          diverged.push(row.branchName);
+          this.store.put(row);
+          continue;
+        }
+        // Commits are immutable: if a previously valid branch still points to
+        // the same commit, its recorded parent revision is still its ancestor.
+        if (
+          row.validationResult !== 'VALID' ||
+          previousHead !== head ||
+          !row.parentBranchRevision
+        ) {
+          if (
+            !row.parentBranchRevision ||
+            !this.git.tryHead(row.parentBranchRevision) ||
+            !this.git.isAncestor(row.parentBranchRevision, row.branchName)
+          ) {
+            row.validationResult = 'BAD_PARENT_REVISION';
+            diverged.push(row.branchName);
+            this.store.put(row);
+            continue;
+          }
+        }
+        row.parentHeadRevision = parentHead;
+        row.validationResult = 'VALID';
         this.store.put(row);
-        continue;
       }
-      row.branchRevision = head;
-      if (row.branchName === this.trunk) {
-        row.validationResult = 'TRUNK';
-        row.parentHeadRevision = null;
-        this.store.put(row);
-        continue;
-      }
-      if (!row.parentBranchName || !this.git.branchExists(row.parentBranchName)) {
-        row.validationResult = 'BAD_PARENT_NAME';
-        diverged.push(row.branchName);
-        this.store.put(row);
-        continue;
-      }
-      if (
-        !row.parentBranchRevision ||
-        !this.git.tryHead(row.parentBranchRevision) ||
-        !this.git.isAncestor(row.parentBranchRevision, row.branchName)
-      ) {
-        row.validationResult = 'BAD_PARENT_REVISION';
-        diverged.push(row.branchName);
-        this.store.put(row);
-        continue;
-      }
-      row.parentHeadRevision = this.git.head(row.parentBranchName);
-      row.validationResult = 'VALID';
-      this.store.put(row);
-    }
+    });
     return { diverged, missing };
   }
 
