@@ -1,4 +1,5 @@
 import { confirm, editor, input } from '@inquirer/prompts';
+import chalk from 'chalk';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
@@ -188,7 +189,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
       store.put(row);
     }
     urls.push(pullRequest.url);
-    output.line(pullRequest.url);
+    output.line(chalk.blue.underline(pullRequest.url));
   }
 
   if (urls.length === 0) output.line('No branches required submission.');

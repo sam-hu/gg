@@ -137,6 +137,10 @@ describe('GitHub submission through an offline fake gh', () => {
       const first = gg(repo, ['submit', '--stack'], env);
       expectSuccess(first);
       expect(first.stdout).toContain('https://github.com/owner/repo/pull/101');
+      const highlighted = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
+      expectSuccess(highlighted);
+      expect(highlighted.stdout).toContain('\u001b[34m');
+      expect(highlighted.stdout).toContain('\u001b[4m');
       const afterFirst = stateFrom(env);
       expect(afterFirst.prs).toHaveLength(2);
       expect(afterFirst.prs.map((pr: any) => [pr.head.ref, pr.base.ref])).toEqual([
