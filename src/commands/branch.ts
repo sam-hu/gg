@@ -87,12 +87,12 @@ export async function createBranch(
   graph.require(parent);
   if (!git.branchExists(parent)) throw ggError(`Could not find branch ${parent}.`);
 
-  await stageForCreate(context, options);
   const messages = options.message ?? [];
   const name = suppliedName ?? generatedBranchName(messages[0]);
   if (!name) {
     throw ggError('Must specify either a branch name or commit message.');
   }
+  if (!git.isValidBranchName(name)) throw ggError(`Invalid branch name: ${name}`);
   if (git.branchExists(name)) throw ggError('Branch with this name already exists');
   const previousChildren = graph.children(parent);
   let childrenToInsert = options.insert ? previousChildren : [];
@@ -104,8 +104,38 @@ export async function createBranch(
   }
   const parentHead = git.head(parent);
 
+  if (options.insert && childrenToInsert.length > 0) {
+    const worktree = git.captureWorktreeSnapshot();
+    await engine.createAndInsertBranch(
+      name,
+      parent,
+      childrenToInsert,
+      worktree,
+      async (checkpoint) => {
+        await stageForCreate(context, options);
+        createTrackedBranch(context, name, parent, parentHead, messages, options, checkpoint);
+      },
+    );
+    return;
+  }
+
+  await stageForCreate(context, options);
+  createTrackedBranch(context, name, parent, parentHead, messages, options);
+}
+
+function createTrackedBranch(
+  context: RepositoryContext,
+  name: string,
+  parent: string,
+  parentHead: string,
+  messages: string[],
+  options: BranchCreateOptions,
+  checkpoint?: () => void,
+): void {
+  const { git, store, output } = context;
   try {
     git.run(['switch', '-q', '-c', name, parent]);
+    checkpoint?.();
     if (git.hasStagedChanges()) {
       const args = ['commit', '-q'];
       if (!context.verify) args.push('--no-verify');
@@ -116,23 +146,21 @@ export async function createBranch(
         stdout: 'inherit',
         stderr: 'inherit',
       });
+      checkpoint?.();
     } else {
       output.line('No staged changes; creating a branch with no commit.');
     }
   } catch (error) {
-    if (git.tryBranch() === name) git.switch(parent);
-    if (git.branchExists(name)) git.run(['branch', '-D', name], { allowFailure: true });
+    if (!checkpoint) {
+      if (git.tryBranch() === name) git.switch(parent);
+      if (git.branchExists(name)) git.run(['branch', '-D', name], { allowFailure: true });
+    }
     throw error;
   }
 
   const branchHead = git.head(name);
   store.track(name, parent, parentHead, branchHead);
-
-  if (options.insert && childrenToInsert.length > 0) {
-    for (const child of childrenToInsert) {
-      await engine.move(child, name, false, `branch create ${name} --insert`);
-    }
-  }
+  checkpoint?.();
 }
 
 async function stageForCreate(

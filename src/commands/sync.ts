@@ -129,10 +129,19 @@ async function cleanupPullRequests(
   const candidates: Array<{ branch: string; pullRequest: PullRequest }> = [];
   for (const [branch, pullRequests] of state.byBranch) {
     if (pullRequests.some((pullRequest) => pullRequest.state === 'OPEN')) continue;
-    const closed = pullRequests.find(
+    const closed = pullRequests.filter(
       (pullRequest) => pullRequest.state === 'MERGED' || pullRequest.state === 'CLOSED',
     );
-    if (closed) candidates.push({ branch, pullRequest: closed });
+    const malformed = closed.find((pullRequest) => !pullRequest.headSha);
+    if (malformed) {
+      throw ggError(
+        `GitHub did not return a head SHA for PR #${malformed.number}; refusing to clean up ${branch}.`,
+      );
+    }
+    const localHead = context.git.tryHead(branch);
+    if (!localHead) continue;
+    const matching = closed.find((pullRequest) => pullRequest.headSha === localHead);
+    if (matching) candidates.push({ branch, pullRequest: matching });
   }
   if (candidates.length === 0) return skippedMergedRoots;
   context.output.line('🧹 Cleaning up branches with merged/closed PRs...');
@@ -159,6 +168,7 @@ async function cleanupPullRequests(
       context,
       candidate.branch,
       row.parentBranchName,
+      candidate.pullRequest.headSha,
     );
     for (const child of reparentedChildren) {
       context.output.line(`Set parent of ${child} to ${row.parentBranchName}.`);

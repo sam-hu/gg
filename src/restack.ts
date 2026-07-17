@@ -2,7 +2,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { GitCommandError } from './git.js';
 import { ggError, UserError } from './errors.js';
-import type { Git } from './git.js';
+import type { Git, WorktreeSnapshot } from './git.js';
 import { StackGraph } from './graph.js';
 import { atomicWrite, type MetadataSnapshot, type MetadataStore } from './metadata.js';
 import type { Output } from './output.js';
@@ -28,6 +28,13 @@ interface ActiveRebase {
   pendingParent?: string;
 }
 
+interface CreatedBranchState {
+  name: string;
+  parentHead: string;
+  worktree: WorktreeSnapshot;
+  expectedHead?: string;
+}
+
 export interface OperationState {
   version: 1;
   command: string;
@@ -42,6 +49,7 @@ export interface OperationState {
   originalQueue: string[];
   pendingParents?: Record<string, string>;
   active?: ActiveRebase;
+  createdBranch?: CreatedBranchState;
   eventId: string;
 }
 
@@ -140,6 +148,62 @@ export class RestackEngine {
     this.writeState(state);
     try {
       await this.continueQueue(state, { command, haltOnConflict: true });
+      this.finishState(state);
+    } catch (error) {
+      if (error instanceof ConflictHalt) throw error;
+      this.rollback(state);
+      throw error;
+    }
+  }
+
+  async createAndInsertBranch(
+    name: string,
+    parent: string,
+    children: string[],
+    worktree: WorktreeSnapshot,
+    createBranch: (checkpoint: () => void) => Promise<void>,
+  ): Promise<void> {
+    this.ensureNotBlocked();
+    const graph = new StackGraph(this.git, this.store);
+    graph.require(parent);
+    const pendingParents: Record<string, string> = {};
+    const queue: string[] = [];
+    const seen = new Set<string>();
+    for (const child of children) {
+      if (graph.parent(child) !== parent) {
+        throw ggError(`Cannot insert ${name}: ${child} is no longer a direct child of ${parent}.`);
+      }
+      for (const branch of graph.descendants(child, true)) {
+        if (seen.has(branch)) continue;
+        if (this.git.isBranchCheckedOutElsewhere(branch)) {
+          throw ggError(
+            `Cannot insert ${name} because ${branch} is checked out in another worktree.`,
+          );
+        }
+        seen.add(branch);
+        queue.push(branch);
+      }
+      pendingParents[child] = name;
+    }
+
+    const state = this.createState(`branch create ${name} --insert`, queue);
+    state.currentBranchOverride = name;
+    state.pendingParents = pendingParents;
+    state.createdBranch = {
+      name,
+      parentHead: this.git.head(parent),
+      worktree,
+    };
+    this.writeState(state);
+    const checkpoint = (): void => this.checkpointCreatedBranch(state);
+    try {
+      await createBranch(checkpoint);
+      checkpoint();
+      await this.continueQueue(state, {
+        command: state.command,
+        haltOnConflict: true,
+        quiet: true,
+      });
       this.finishState(state);
     } catch (error) {
       if (error instanceof ConflictHalt) throw error;
@@ -334,6 +398,16 @@ export class RestackEngine {
   }
 
   private async restartInterruptedCleanOperation(state: OperationState): Promise<void> {
+    if (state.createdBranch) {
+      if (!state.active && state.queue.length === 0 && this.matchesExpectedState(state)) {
+        this.finishState(state);
+        return;
+      }
+      this.rollback(state);
+      throw ggError(
+        `Interrupted ${state.command} was rolled back safely. Run the branch creation command again.`,
+      );
+    }
     const queue = state.originalQueue ?? [
       ...(state.active ? [state.active.branch] : []),
       ...state.queue,
@@ -381,6 +455,15 @@ export class RestackEngine {
         );
       }
     }
+    const created = state.createdBranch;
+    if (created) {
+      const current = this.git.tryHead(created.name);
+      if (current && current !== created.parentHead && current !== created.expectedHead) {
+        throw ggError(
+          `Cannot abort because newly created branch ${created.name} changed outside the interrupted gg operation.`,
+        );
+      }
+    }
     const currentMetadata = this.store.snapshot();
     const expectedMetadata = state.expectedMetadata ?? state.metadata;
     const currentSignature = metadataTopologySignature(currentMetadata);
@@ -400,7 +483,9 @@ export class RestackEngine {
         );
       }
     }
-    if (
+    if (created) {
+      this.git.run(['symbolic-ref', 'HEAD', `refs/heads/${created.worktree.branch}`]);
+    } else if (
       this.git.branchExists(state.currentBranchOverride) &&
       this.git.tryBranch() !== state.currentBranchOverride
     ) {
@@ -411,13 +496,18 @@ export class RestackEngine {
       if (!this.git.branchExists(branch)) continue;
       const current = this.git.head(branch);
       if (current === revision) continue;
-      if (branch === checkedOut) {
+      if (!created && branch === checkedOut) {
         this.git.run(['reset', '-q', '--keep', revision]);
       } else {
         this.git.updateRef(branch, revision, current);
       }
     }
     this.store.restore(state.metadata);
+    if (created) {
+      this.git.restoreWorktreeSnapshot(created.worktree);
+      const createdHead = this.git.tryHead(created.name);
+      if (createdHead) this.git.deleteRef(created.name, createdHead);
+    }
     atomicWrite(this.store.continuePath, JSON.stringify({ branchesToRestack: [] }), 0o600);
     if (existsSync(this.store.operationPath)) unlinkSync(this.store.operationPath);
   }
@@ -654,6 +744,28 @@ export class RestackEngine {
     delete state.pendingMetadata;
   }
 
+  private checkpointCreatedBranch(state: OperationState): void {
+    const created = state.createdBranch;
+    if (!created) throw new Error('Missing created-branch recovery state.');
+    const head = this.git.tryHead(created.name);
+    if (head) {
+      created.expectedHead = head;
+      state.expectedRefs[created.name] = head;
+    }
+    state.expectedMetadata = this.store.snapshot();
+    this.writeState(state);
+  }
+
+  private matchesExpectedState(state: OperationState): boolean {
+    for (const [branch, expected] of Object.entries(state.expectedRefs)) {
+      if (this.git.tryHead(branch) !== expected) return false;
+    }
+    return (
+      metadataTopologySignature(this.store.snapshot()) ===
+      metadataTopologySignature(state.expectedMetadata)
+    );
+  }
+
   private requireOwningWorktree(state: OperationState, action: string): void {
     if (state.ownerGitDir !== this.git.gitDir) {
       throw ggError(
@@ -713,6 +825,7 @@ function metadataTopologySignature(snapshot: MetadataSnapshot): string {
       parentBranchName: row.parentBranchName,
       parentBranchRevision: row.parentBranchRevision,
       lastSubmittedVersion: row.lastSubmittedVersion,
+      lastSubmittedBaseBranch: row.lastSubmittedBaseBranch,
       state: row.state,
       siblingOrder: row.siblingOrder,
     })),

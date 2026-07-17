@@ -46,6 +46,10 @@ export class RepositoryContext {
     return this.storeValue;
   }
 
+  useReadOnlyStore(): void {
+    this.storeValue ??= MetadataStore.openReadOnly(this.git);
+  }
+
   close(): void {
     this.storeValue?.close();
   }

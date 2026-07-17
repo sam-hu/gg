@@ -101,7 +101,7 @@ describe('sync', () => {
             draft: false,
             title: 'A',
             body: '',
-            head: { ref: 'a' },
+            head: { ref: 'a', sha: aHead },
             base: { ref: 'main' },
             requested_reviewers: [],
             requested_teams: [],
@@ -122,6 +122,111 @@ describe('sync', () => {
       ).toEqual({ parent_branch_name: 'main' });
       db.close();
       expect(gg(repo, ['log', 'short']).stdout).not.toContain('diverged');
+    });
+  });
+
+  test('keeps a reused branch when a historical merged PR points at an older head', async () => {
+    await withTempRoot('sync-reused-branch', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'a.txt', 'first use\n');
+      expectSuccess(gg(repo, ['bc', 'a', '--all', '-m', 'First use']));
+      const historicalHead = head(repo, 'a');
+      expectSuccess(git(repo, 'commit', '-q', '--allow-empty', '-m', 'Reused branch'));
+      const reusedHead = head(repo, 'a');
+
+      const env = installFakeGh(root, {
+        auth: true,
+        prs: [
+          {
+            number: 1,
+            node_id: 'PR_historical_1',
+            html_url: 'https://github.com/owner/repo/pull/1',
+            state: 'closed',
+            merged_at: '2026-01-01T00:00:00Z',
+            draft: false,
+            title: 'First use',
+            body: '',
+            head: { ref: 'a', sha: historicalHead },
+            base: { ref: 'main' },
+            requested_reviewers: [],
+            requested_teams: [],
+          },
+        ],
+      });
+
+      expectSuccess(gg(repo, ['sync', '--delete-all', '--no-restack'], env));
+      expect(head(repo, 'a')).toBe(reusedHead);
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/a').status).toBe(0);
+    });
+  });
+
+  test('rejects cleanup when GitHub omits the merged PR head SHA', async () => {
+    await withTempRoot('sync-missing-head', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      expectSuccess(gg(repo, ['bc', 'a']));
+      const env = installFakeGh(root, {
+        auth: true,
+        prs: [
+          {
+            number: 1,
+            node_id: 'PR_missing_sha',
+            html_url: 'https://github.com/owner/repo/pull/1',
+            state: 'closed',
+            merged_at: '2026-01-01T00:00:00Z',
+            draft: false,
+            title: 'A',
+            body: '',
+            head: { ref: 'a' },
+            base: { ref: 'main' },
+            requested_reviewers: [],
+            requested_teams: [],
+          },
+        ],
+      });
+
+      const result = gg(repo, ['sync', '--delete-all', '--no-restack'], env);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('did not return a head SHA');
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/a').status).toBe(0);
+    });
+  });
+
+  test('rejects unknown pull-request states before cleanup', async () => {
+    await withTempRoot('sync-unknown-state', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      expectSuccess(gg(repo, ['bc', 'a']));
+      const env = installFakeGh(root, {
+        auth: true,
+        prs: [
+          {
+            number: 1,
+            node_id: 'PR_unknown_state',
+            html_url: 'https://github.com/owner/repo/pull/1',
+            state: 'mystery',
+            draft: false,
+            title: 'A',
+            body: '',
+            head: { ref: 'a', sha: head(repo, 'a') },
+            base: { ref: 'main' },
+            requested_reviewers: [],
+            requested_teams: [],
+          },
+        ],
+      });
+
+      const result = gg(repo, ['sync', '--delete-all', '--no-restack'], env);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('unknown pull-request state');
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/a').status).toBe(0);
     });
   });
 });
@@ -334,6 +439,70 @@ describe('GitHub submission through an offline fake gh', () => {
       expectSuccess(gg(repo, ['submit'], env));
       expect(head(bare, 'refs/heads/feature')).toBe(rewrittenHead);
       expect(stateFrom(env).prs).toHaveLength(1);
+    });
+  });
+
+  test('refuses to overwrite collaborator commits that appeared after the last submit', async () => {
+    await withTempRoot('submit-collaborator-divergence', (root) => {
+      const repo = initRepo(root);
+      const bare = createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'feature.txt', 'first\n');
+      expectSuccess(gg(repo, ['bc', 'feature', '--all', '-m', 'Feature']));
+      const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 1 });
+      expectSuccess(gg(repo, ['submit'], env));
+
+      const updater = path.join(root, 'updater');
+      expectSuccess(command('git', ['clone', '-q', bare, updater], { cwd: root }));
+      expectSuccess(git(updater, 'config', 'user.name', 'Collaborator'));
+      expectSuccess(git(updater, 'config', 'user.email', 'collaborator@example.invalid'));
+      expectSuccess(git(updater, 'switch', '-q', '-c', 'feature', 'origin/feature'));
+      write(updater, 'collaborator.txt', 'remote work\n');
+      expectSuccess(git(updater, 'add', 'collaborator.txt'));
+      expectSuccess(git(updater, 'commit', '-q', '-m', 'Collaborator work'));
+      expectSuccess(git(updater, 'push', '-q', 'origin', 'feature'));
+      const collaboratorHead = head(updater, 'feature');
+
+      write(repo, 'feature.txt', 'local rewrite\n');
+      expectSuccess(gg(repo, ['ca', '--all', '-m', 'Local rewrite']));
+      const result = gg(repo, ['submit'], env);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('changed after the last successful gg submit');
+      expect(result.stderr).toContain('Refusing to overwrite');
+      expect(head(bare, 'refs/heads/feature')).toBe(collaboratorHead);
+    });
+  });
+
+  test('updates PR topology even when commit SHAs are unchanged', async () => {
+    await withTempRoot('submit-topology-fingerprint', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      expectSuccess(gg(repo, ['bc', 'a']));
+      const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 1 });
+      expectSuccess(gg(repo, ['submit'], env));
+
+      expectSuccess(git(repo, 'switch', '-q', 'main'));
+      expectSuccess(gg(repo, ['bc', 'x']));
+      expectSuccess(gg(repo, ['submit'], env));
+      expectSuccess(gg(repo, ['move', '--source', 'a', '--onto', 'x']));
+
+      const result = gg(repo, ['submit', '--branch', 'a'], env);
+      expectSuccess(result);
+      expect(result.stdout).not.toContain('Stack is unchanged since the last submit.');
+      expect(result.stdout).toContain('(updated)');
+      const pullRequest = stateFrom(env).prs.find((candidate: any) => candidate.head.ref === 'a');
+      expect(pullRequest.base.ref).toBe('x');
+
+      const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
+      expect(
+        db
+          .prepare('SELECT last_submitted_base_branch FROM branch_metadata WHERE branch_name = ?')
+          .get('a'),
+      ).toEqual({ last_submitted_base_branch: 'x' });
+      db.close();
     });
   });
 

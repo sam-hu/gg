@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { stripVTControlCharacters } from 'node:util';
@@ -119,6 +120,25 @@ describe('merge', () => {
       expect(stateFrom(env).calls.some((call: any) => call.method === 'PUT')).toBe(true);
     });
   });
+
+  test('refuses cleanup when an already-merged PR belongs to an older branch head', async () => {
+    await withTempRoot('merge-stale-completed-pr', async (root) => {
+      const { repo, env } = createSubmittedStack(root);
+      expectSuccess(gg(repo, ['bottom']));
+      const before = head(repo, 'a');
+      const state = stateFrom(env);
+      state.prs[0].state = 'closed';
+      state.prs[0].merged_at = '2026-07-17T00:00:00Z';
+      state.prs[0].head.sha = head(repo, 'main');
+      writeFileSync(env.GG_FAKE_GH_STATE!, JSON.stringify(state, null, 2));
+
+      const result = await runInteractiveMerge(repo, env, '\r');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('but local branch a is at');
+      expect(head(repo, 'a')).toBe(before);
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/a').status).toBe(0);
+    });
+  });
 });
 
 function createSubmittedStack(root: string): {
@@ -167,7 +187,7 @@ function createSubmittedStack(root: string): {
         draft: false,
         title: 'A',
         body: '',
-        head: { ref: 'a' },
+        head: { ref: 'a', sha: expectedHead },
         base: { ref: 'main' },
         requested_reviewers: [],
         requested_teams: [],
@@ -180,7 +200,7 @@ function createSubmittedStack(root: string): {
         draft: false,
         title: 'B',
         body: '',
-        head: { ref: 'b' },
+        head: { ref: 'b', sha: head(repo, 'b') },
         base: { ref: 'a' },
         requested_reviewers: [],
         requested_teams: [],
@@ -193,13 +213,23 @@ function createSubmittedStack(root: string): {
         draft: false,
         title: 'C',
         body: '',
-        head: { ref: 'c' },
+        head: { ref: 'c', sha: head(repo, 'c') },
         base: { ref: 'b' },
         requested_reviewers: [],
         requested_teams: [],
       },
     ],
   });
+  const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
+  const recordSubmission = db.prepare(
+    `UPDATE branch_metadata
+     SET last_submitted_version = ?, last_submitted_base_branch = ?
+     WHERE branch_name = ?`,
+  );
+  recordSubmission.run(head(repo, 'a'), 'main', 'a');
+  recordSubmission.run(head(repo, 'b'), 'a', 'b');
+  recordSubmission.run(head(repo, 'c'), 'b', 'c');
+  db.close();
   return { repo, bare, mergeSha, env };
 }
 

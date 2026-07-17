@@ -35,6 +35,8 @@ import {
 } from './context.js';
 import { UserError } from './errors.js';
 import { runGitPassthrough } from './git.js';
+import { MutationLease } from './mutation-lease.js';
+import { MetadataStore } from './metadata.js';
 
 const program = new Command();
 program
@@ -136,14 +138,14 @@ const logCommand = program
   .description('display tracked stacks (style: short or long)');
 configureLogOptions(logCommand).action(async (style: string | undefined, options: LogOptions) => {
   const normalized = style === 'short' || style === 'long' ? style : 'default';
-  await withContext((context) => showLog(context, normalized, options));
+  await withReadContext((context) => showLog(context, normalized, options));
 });
 
 configureLogOptions(program.command('ls').description('alias for log short')).action(
-  async (options: LogOptions) => withContext((context) => showLog(context, 'short', options)),
+  async (options: LogOptions) => withReadContext((context) => showLog(context, 'short', options)),
 );
 configureLogOptions(program.command('ll').description('alias for log long')).action(
-  async (options: LogOptions) => withContext((context) => showLog(context, 'long', options)),
+  async (options: LogOptions) => withReadContext((context) => showLog(context, 'long', options)),
 );
 
 function configureLogOptions(command: Command): Command {
@@ -279,11 +281,48 @@ function configureSubmit(command: Command, stackDefault: boolean): void {
 
 async function withContext<T>(callback: (context: RepositoryContext) => Promise<T>): Promise<T> {
   const context = RepositoryContext.discover(globalOptionsFromArgv());
+  const lease = MutationLease.acquire(context.git, primaryCommandName());
   try {
     return await callback(context);
   } finally {
-    context.close();
+    try {
+      context.close();
+    } finally {
+      lease.release();
+    }
   }
+}
+
+async function withReadContext<T>(
+  callback: (context: RepositoryContext) => Promise<T>,
+): Promise<T> {
+  const context = RepositoryContext.discover(globalOptionsFromArgv());
+  const readOnly = MetadataStore.canOpenReadOnly(context.git);
+  const lease = readOnly ? undefined : MutationLease.acquire(context.git, primaryCommandName());
+  if (readOnly) context.useReadOnlyStore();
+  try {
+    return await callback(context);
+  } finally {
+    try {
+      context.close();
+    } finally {
+      lease?.release();
+    }
+  }
+}
+
+function primaryCommandName(): string {
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === '--cwd') {
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--cwd=') || applyBooleanGlobalOption({}, argument)) continue;
+    if (!argument.startsWith('-')) return argument;
+  }
+  return 'unknown command';
 }
 
 function globalOptionsFromArgv(): GlobalOptions {

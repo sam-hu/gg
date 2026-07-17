@@ -21,6 +21,8 @@ gg bc [name]
 
 Flags: `-m/--message`, `-a/--all`, `-u/--update`, `-p/--patch`, `-i/--insert`, `-o/--onto`, `-v/--verbose`.
 
+Names, parents, selected children, and linked-worktree conflicts are validated before staging. `--insert` journals branch creation and all selected child restacks as one recoverable operation; `gg abort --force` restores the original refs, metadata, index, and worktree if a rebase conflict occurs.
+
 The current branch is the parent unless `--onto` is supplied. With no staged changes, non-interactive mode creates an empty branch at the exact parent commit, matching the observed Graphite behavior.
 
 ## Track an existing branch
@@ -100,7 +102,7 @@ Flags: `--classic`, `-r/--reverse`, `-s/--stack`, `-n/--steps`, `-u/--show-untra
 gg sync [--restack|--no-restack] [-f|--force] [-d|--delete-all] [-a|--all]
 ```
 
-Sync fetches the trunk remote, fast-forwards local trunk when safe, optionally cleans local branches whose GitHub PRs are closed/merged, and restacks every tracked root stack. A conflict warns, skips that subtree, and continues independent stacks.
+Sync fetches the trunk remote, fast-forwards local trunk when safe, optionally cleans local branches whose GitHub PRs are closed/merged at the exact current local branch SHA, and restacks every tracked root stack. Missing head SHAs and unknown PR states stop cleanup. A conflict warns, skips that subtree, and continues independent stacks.
 
 ## Merge
 
@@ -108,7 +110,7 @@ Sync fetches the trunk remote, fast-forwards local trunk when safe, optionally c
 gg merge
 ```
 
-Merge finds the bottommost branch in the checked-out stack and squash-merges its open pull request into trunk through GitHub. It then fetches and fast-forwards local trunk, deletes the merged local branch, reparents its direct children to trunk, and restacks every remaining descendant.
+Merge finds the bottommost branch in the checked-out stack and squash-merges its open pull request into trunk through GitHub after verifying that the PR head SHA exactly matches the local branch. It then fetches and fast-forwards local trunk, deletes that same validated branch tip, reparents its direct children to trunk, and restacks every remaining descendant.
 
 Before merging, the command renders a checkout-style tree containing the current branch's linear path down to trunk and its full descendant tree. The current branch is marked with `◉` and `(current)`. A `Y/n` confirmation directly beneath the tree names the bottommost branch and trunk; yes is the default. Merge is therefore interactive. The worktree must be clean, trunk must be fast-forwardable, and none of the affected branches may be checked out in another worktree.
 
@@ -126,7 +128,7 @@ Default scope is the current branch plus downstack ancestors. `--stack` includes
 - `-d/--draft`, `-p/--publish`
 - `--restack` (with `--dry-run`, the plan assumes that the announced restack will succeed)
 - `--dry-run`, `-c/--confirm`, `-u/--update-only`
-- `-f/--force` (deprecated compatibility flag; rewritten branches automatically use a pinned force-with-lease)
+- `-f/--force` (deprecated compatibility flag; a rewrite is allowed only when the remote still equals the last successfully submitted OID, which is pinned in `--force-with-lease`)
 - `--always`, `--branch`, `--target-trunk`, `-s/--stack`/`--no-stack`
 - `-e/--edit`, `-n/--no-edit`, title/description-specific edit flags, and `--cli`
 - `-r/--reviewers`, `-t/--team-reviewers`, `--rerequest-review`

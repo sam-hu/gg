@@ -46,6 +46,7 @@ interface SubmitPlanItem {
   branch: string;
   base: string;
   localHead: string;
+  lastSubmittedVersion: string | null;
   codeUnchanged: boolean;
   title: string;
   body: string;
@@ -157,12 +158,17 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
     if (!parent) continue;
     const openPullRequest = open[0];
     const localHead = git.head(branch);
+    const metadata = graph.get(branch);
+    const base = parent === graph.trunk ? (options.targetTrunk ?? graph.trunk) : parent;
     plan.push({
       branch,
-      base: parent === graph.trunk ? (options.targetTrunk ?? graph.trunk) : parent,
+      base,
       localHead,
+      lastSubmittedVersion: metadata?.lastSubmittedVersion ?? null,
       codeUnchanged: Boolean(
-        openPullRequest && graph.get(branch)?.lastSubmittedVersion === localHead,
+        openPullRequest &&
+        metadata?.lastSubmittedVersion === localHead &&
+        metadata.lastSubmittedBaseBranch === base,
       ),
       title: git.capture(['show', '-s', '--format=%s', branch]),
       body: openPullRequest ? withoutLegacyStackDescription(openPullRequest.body) : '',
@@ -255,6 +261,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
       const row = store.get(item.branch);
       if (!row) continue;
       row.lastSubmittedVersion = item.localHead;
+      row.lastSubmittedBaseBranch = item.base;
       store.put(row);
     }
   }
@@ -341,6 +348,7 @@ function canSkipUnchangedSubmit(
     const parent = row?.parentBranchName;
     return Boolean(
       row?.lastSubmittedVersion &&
+      row.lastSubmittedBaseBranch === parent &&
       row.validationResult === 'VALID' &&
       head === row.lastSubmittedVersion &&
       parent &&
@@ -452,7 +460,12 @@ function pushBranches(
     if (remoteHead === item.localHead && !options.always) continue;
     refspecs.push(`refs/heads/${item.branch}:${remoteRef}`);
     if (remoteHead && !git.isAncestor(remoteHead, item.localHead)) {
-      leases.push(`--force-with-lease=${remoteRef}:${remoteHead}`);
+      if (!item.lastSubmittedVersion || remoteHead !== item.lastSubmittedVersion) {
+        throw ggError(
+          `Remote branch ${item.branch} changed after the last successful gg submit. Refusing to overwrite ${remoteHead}. Fetch and reconcile the remote branch before submitting again.`,
+        );
+      }
+      leases.push(`--force-with-lease=${remoteRef}:${item.lastSubmittedVersion}`);
     }
   }
   if (refspecs.length === 0) return false;
