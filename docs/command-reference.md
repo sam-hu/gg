@@ -136,7 +136,7 @@ Default scope is the current branch plus downstack ancestors. `--stack` includes
 - `--ignore-out-of-sync-trunk`
 - `-v/--view` and `-w/--web` (print browser instructions; they do not launch a browser)
 
-New non-interactive PRs default to draft. Each PR targets its immediate parent; the bottom branch targets trunk or `--target-trunk`. Fork workflows use the trunk's fetch remote for the base repository and Git's branch `pushRemote`/`remote.pushDefault`/branch remote precedence plus `pushurl` for the head repository.
+New non-interactive PRs default to draft. Each PR targets its immediate parent; the bottom branch targets trunk or `--target-trunk`. By default, a PR title is the subject of the branch's first commit after its parent, so later commits do not replace it; explicit title editing still overrides that default. Fork workflows use the trunk's fetch remote for the base repository and Git's branch `pushRemote`/`remote.pushDefault`/branch remote precedence plus `pushurl` for the head repository.
 
 PR descriptions are left available for human-authored content. Stack metadata is maintained in a dedicated PR comment containing a linked list of every open PR in that connected stack; the current PR is bolded. Each successful submission updates these comments in place across all tracked stacks, so upstack additions and moves are reflected on every affected PR.
 

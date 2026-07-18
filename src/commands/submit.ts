@@ -170,7 +170,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
         metadata?.lastSubmittedVersion === localHead &&
         metadata.lastSubmittedBaseBranch === base,
       ),
-      title: git.capture(['show', '-s', '--format=%s', branch]),
+      title: firstBranchCommitSubject(git, parent, branch),
       body: openPullRequest ? withoutLegacyStackDescription(openPullRequest.body) : '',
       ...(openPullRequest ? { openPullRequest } : {}),
     });
@@ -416,6 +416,18 @@ function escapeMarkdownLinkText(value: string): string {
 
 function withoutLegacyStackDescription(body: string): string {
   return body.replace(/^Stacked branch: `[^`\r\n]+`\r?\n\r?\nBase: `[^`\r\n]+`(?:\r?\n\r?\n)?/, '');
+}
+
+function firstBranchCommitSubject(git: Git, parent: string, branch: string): string {
+  const subjects = git.capture([
+    'log',
+    '--reverse',
+    '--topo-order',
+    '--format=%s',
+    `${parent}..${branch}`,
+    '--',
+  ]);
+  return subjects.split('\n')[0] || git.capture(['show', '-s', '--format=%s', branch]);
 }
 
 function submitScope(graph: StackGraph, anchor: string, includeDescendants: boolean): string[] {
