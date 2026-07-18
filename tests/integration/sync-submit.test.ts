@@ -307,6 +307,9 @@ describe('GitHub submission through an offline fake gh', () => {
       expectSuccess(gg(repo, ['bc', 'a', '--all', '-m', 'A title']));
       write(repo, 'b.txt', 'b\n');
       expectSuccess(gg(repo, ['bc', 'b', '--all', '-m', 'B title']));
+      write(repo, 'b-follow-up.txt', 'follow-up\n');
+      expectSuccess(git(repo, 'add', 'b-follow-up.txt'));
+      expectSuccess(git(repo, 'commit', '-q', '-m', 'B follow-up'));
       expectSuccess(gg(repo, ['bottom']));
 
       const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 101 });
@@ -348,6 +351,7 @@ describe('GitHub submission through an offline fake gh', () => {
         ['a', 'main'],
         ['b', 'a'],
       ]);
+      expect(afterFirst.prs.map((pr: any) => pr.title)).toEqual(['A title', 'B title']);
       expect(afterFirst.prs.every((pr: any) => pr.body === '')).toBe(true);
       expect(afterFirst.prs.every((pr: any) => pr.draft)).toBe(true);
       expect(afterFirst.comments).toHaveLength(2);
@@ -386,7 +390,7 @@ describe('GitHub submission through an offline fake gh', () => {
       expectSuccess(git(repo, 'switch', '-q', 'b'));
       write(repo, 'b.txt', 'b updated\n');
       expectSuccess(git(repo, 'add', 'b.txt'));
-      expectSuccess(git(repo, 'commit', '-q', '-m', 'B title'));
+      expectSuccess(git(repo, 'commit', '-q', '-m', 'B latest change'));
       const callsBeforeChangedTop = stateFrom(env).calls.length;
       const changedTop = gg(repo, ['submit', '--stack'], { ...env, FORCE_COLOR: '1' });
       expectSuccess(changedTop);
@@ -398,6 +402,7 @@ describe('GitHub submission through an offline fake gh', () => {
       );
       expect(changedTop.stdout).toContain('\u001b[2m(unchanged)\u001b[22m');
       expect(changedTop.stdout).toContain('\u001b[33m(updated)\u001b[39m');
+      expect(stateFrom(env).prs[1].title).toBe('B title');
       expect(
         stateFrom(env)
           .calls.slice(callsBeforeChangedTop)
@@ -665,12 +670,13 @@ describe('GitHub submission through an offline fake gh', () => {
 
       const healed = stateFrom(env);
       expect(healed.comments).toHaveLength(4);
+      expect(healed.prs.find((pr: any) => pr.head.ref === 'c').title).toBe('C title');
       expect(
         healed.comments.find((comment: any) => comment.pullRequestNumber === 2).body,
-      ).toContain('[#4 Update C](https://github.com/owner/repo/pull/4)');
+      ).toContain('[#4 C title](https://github.com/owner/repo/pull/4)');
       expect(
         healed.comments.find((comment: any) => comment.pullRequestNumber === 4).body,
-      ).toContain('- **[#4 Update C](https://github.com/owner/repo/pull/4)**');
+      ).toContain('- **[#4 C title](https://github.com/owner/repo/pull/4)**');
 
       expectSuccess(gg(repo, ['move', '--source', 'b', '--onto', 'x']));
       expectSuccess(gg(repo, ['submit', '--branch', 'b', '--stack'], env));
@@ -688,7 +694,7 @@ describe('GitHub submission through an offline fake gh', () => {
         );
         expect(comment.body).toContain('[#3 X title](https://github.com/owner/repo/pull/3)');
         expect(comment.body).toContain('[#2 B title](https://github.com/owner/repo/pull/2)');
-        expect(comment.body).toContain('[#4 Update C](https://github.com/owner/repo/pull/4)');
+        expect(comment.body).toContain('[#4 C title](https://github.com/owner/repo/pull/4)');
       }
     });
   });
