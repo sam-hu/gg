@@ -665,7 +665,7 @@ export class RestackEngine {
   private announceQueue(queue: string[], heading: string): void {
     if (queue.length < 2) return;
     this.output.line(heading);
-    for (const branch of queue) this.output.line(`  ${branch}`);
+    this.output.lines(queue.map((branch) => `  ${branch}`));
   }
 
   private isCompletedActiveRebase(state: OperationState, branch: string, current: string): boolean {
@@ -714,7 +714,7 @@ function metadataTopologySignature(snapshot: MetadataSnapshot): string {
       parentBranchRevision: row.parentBranchRevision,
       lastSubmittedVersion: row.lastSubmittedVersion,
       state: row.state,
-      children: row.children,
+      siblingOrder: row.siblingOrder,
     })),
   );
 }

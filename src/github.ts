@@ -246,8 +246,9 @@ export async function authenticatedGitHubClient(
   repository: GitHubRepository,
 ): Promise<GitHubClient> {
   if (commandExists('gh')) {
-    const client = new GhClient();
     try {
+      GhTransport.requireAuthentication(repository);
+      const client = new GitHubOperations(new GhTransport());
       await client.preflight(repository);
       return client;
     } catch (error) {
@@ -257,7 +258,7 @@ export async function authenticatedGitHubClient(
   }
   const token = process.env.GITHUB_TOKEN;
   if (token) {
-    const client = new TokenClient(token);
+    const client = new GitHubOperations(new TokenTransport(token));
     await client.preflight(repository);
     return client;
   }
@@ -268,20 +269,26 @@ export async function authenticatedGitHubClient(
 
 class GhAuthUnavailable extends Error {}
 
-class GhClient implements GitHubClient {
+interface GitHubTransport {
+  request(
+    repository: GitHubRepository,
+    method: string,
+    endpoint: string,
+    body?: unknown,
+  ): Promise<unknown>;
+}
+
+class GitHubOperations implements GitHubClient {
+  constructor(private readonly transport: GitHubTransport) {}
+
   async preflight(repository: GitHubRepository): Promise<void> {
-    const result = runCommand('gh', ['auth', 'status', '--active', '--hostname', repository.host], {
-      cwd: process.cwd(),
-      allowFailure: true,
-    });
-    if (result.status !== 0) throw new GhAuthUnavailable('gh is not authenticated.');
-    this.api(repository, 'GET', `repos/${repository.owner}/${repository.name}`);
+    await this.transport.request(repository, 'GET', `repos/${repository.owner}/${repository.name}`);
   }
 
   async listPullRequests(repository: GitHubRepository): Promise<PullRequest[]> {
     const pullRequests: PullRequest[] = [];
     for (let page = 1; ; page += 1) {
-      const value = this.api(
+      const value = await this.transport.request(
         repository,
         'GET',
         `repos/${repository.owner}/${repository.name}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
@@ -301,7 +308,12 @@ class GhClient implements GitHubClient {
 
   async create(repository: GitHubRepository, input: PullRequestInput): Promise<PullRequest> {
     return normalizePullRequest(
-      this.api(repository, 'POST', `repos/${repository.owner}/${repository.name}/pulls`, input),
+      await this.transport.request(
+        repository,
+        'POST',
+        `repos/${repository.owner}/${repository.name}/pulls`,
+        input,
+      ),
     );
   }
 
@@ -311,7 +323,7 @@ class GhClient implements GitHubClient {
     input: Partial<PullRequestInput>,
   ): Promise<PullRequest> {
     return normalizePullRequest(
-      this.api(
+      await this.transport.request(
         repository,
         'PATCH',
         `repos/${repository.owner}/${repository.name}/pulls/${number}`,
@@ -328,7 +340,7 @@ class GhClient implements GitHubClient {
         'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{url}}}',
       variables: { id: pullRequest.nodeId },
     };
-    this.api(repository, 'POST', 'graphql', query);
+    await this.transport.request(repository, 'POST', 'graphql', query);
   }
 
   async requestReviewers(
@@ -338,7 +350,7 @@ class GhClient implements GitHubClient {
     teams: string[],
   ): Promise<void> {
     if (reviewers.length === 0 && teams.length === 0) return;
-    this.api(
+    await this.transport.request(
       repository,
       'POST',
       `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/requested_reviewers`,
@@ -351,7 +363,7 @@ class GhClient implements GitHubClient {
     pullRequest: PullRequest,
     body: string,
   ): Promise<void> {
-    this.api(
+    await this.transport.request(
       repository,
       'POST',
       `repos/${repository.owner}/${repository.name}/issues/${pullRequest.number}/comments`,
@@ -371,7 +383,7 @@ class GhClient implements GitHubClient {
     while (pending.length > 0) {
       const query = issueCommentsQuery(repository, pending);
       const pages = normalizeIssueCommentPages(
-        this.api(repository, 'POST', 'graphql', query),
+        await this.transport.request(repository, 'POST', 'graphql', query),
         pending,
       );
       comments.push(...pages.comments);
@@ -385,7 +397,7 @@ class GhClient implements GitHubClient {
     comment: IssueComment,
     body: string,
   ): Promise<void> {
-    this.api(
+    await this.transport.request(
       repository,
       'PATCH',
       `repos/${repository.owner}/${repository.name}/issues/comments/${comment.id}`,
@@ -395,7 +407,7 @@ class GhClient implements GitHubClient {
 
   async enableAutoMerge(repository: GitHubRepository, pullRequest: PullRequest): Promise<void> {
     requireNodeId(pullRequest);
-    this.api(repository, 'POST', 'graphql', {
+    await this.transport.request(repository, 'POST', 'graphql', {
       query:
         'mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){pullRequest{url}}}',
       variables: { id: pullRequest.nodeId },
@@ -408,7 +420,7 @@ class GhClient implements GitHubClient {
     expectedHead: string,
   ): Promise<MergeResult> {
     return normalizeMergeResult(
-      this.api(
+      await this.transport.request(
         repository,
         'PUT',
         `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/merge`,
@@ -422,20 +434,30 @@ class GhClient implements GitHubClient {
     repository: GitHubRepository,
     pullRequest: PullRequest,
   ): Promise<string[]> {
-    const value = this.api(
+    const value = await this.transport.request(
       repository,
       'GET',
       `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/reviews`,
     );
     return reviewAuthors(value);
   }
+}
 
-  private api(
+class GhTransport implements GitHubTransport {
+  static requireAuthentication(repository: GitHubRepository): void {
+    const result = runCommand('gh', ['auth', 'status', '--active', '--hostname', repository.host], {
+      cwd: process.cwd(),
+      allowFailure: true,
+    });
+    if (result.status !== 0) throw new GhAuthUnavailable('gh is not authenticated.');
+  }
+
+  async request(
     repository: GitHubRepository,
     method: string,
     endpoint: string,
     body?: unknown,
-  ): unknown {
+  ): Promise<unknown> {
     const args = ['api', '--hostname', repository.host, '--method', method, endpoint];
     const commandOptions: {
       cwd: string;
@@ -454,183 +476,14 @@ class GhClient implements GitHubClient {
     if (result.status !== 0) {
       throw ggError(`GitHub request failed: ${sanitizeApiError(result.stderr || result.stdout)}`);
     }
-    let parsed: any;
-    try {
-      parsed = result.stdout.trim() ? (JSON.parse(result.stdout) as any) : {};
-    } catch {
-      throw ggError('GitHub returned malformed JSON.');
-    }
-    if (endpoint === 'graphql' && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
-      throw ggError('GitHub GraphQL mutation failed.');
-    }
-    return parsed;
+    return parseApiResponse(result.stdout, endpoint);
   }
 }
 
-class TokenClient implements GitHubClient {
+class TokenTransport implements GitHubTransport {
   constructor(private readonly token: string) {}
 
-  async preflight(repository: GitHubRepository): Promise<void> {
-    await this.api(repository, 'GET', `repos/${repository.owner}/${repository.name}`);
-  }
-
-  async listPullRequests(repository: GitHubRepository): Promise<PullRequest[]> {
-    const pullRequests: PullRequest[] = [];
-    for (let page = 1; ; page += 1) {
-      const value = await this.api(
-        repository,
-        'GET',
-        `repos/${repository.owner}/${repository.name}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
-      );
-      if (!Array.isArray(value)) throw ggError('GitHub returned malformed pull-request data.');
-      const batch = value.map(normalizePullRequest);
-      pullRequests.push(...batch);
-      if (batch.length < 100) return pullRequests;
-    }
-  }
-
-  async listForHead(repository: GitHubRepository, branch: string): Promise<PullRequest[]> {
-    return (await this.listPullRequests(repository)).filter((pullRequest) =>
-      matchesHead(repository, pullRequest, branch),
-    );
-  }
-
-  async create(repository: GitHubRepository, input: PullRequestInput): Promise<PullRequest> {
-    return normalizePullRequest(
-      await this.api(
-        repository,
-        'POST',
-        `repos/${repository.owner}/${repository.name}/pulls`,
-        input,
-      ),
-    );
-  }
-
-  async update(
-    repository: GitHubRepository,
-    number: number,
-    input: Partial<PullRequestInput>,
-  ): Promise<PullRequest> {
-    return normalizePullRequest(
-      await this.api(
-        repository,
-        'PATCH',
-        `repos/${repository.owner}/${repository.name}/pulls/${number}`,
-        input,
-      ),
-    );
-  }
-
-  async publish(repository: GitHubRepository, pullRequest: PullRequest): Promise<void> {
-    if (!pullRequest.draft) return;
-    requireNodeId(pullRequest);
-    await this.api(repository, 'POST', 'graphql', {
-      query:
-        'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{url}}}',
-      variables: { id: pullRequest.nodeId },
-    });
-  }
-
-  async requestReviewers(
-    repository: GitHubRepository,
-    pullRequest: PullRequest,
-    reviewers: string[],
-    teams: string[],
-  ): Promise<void> {
-    if (reviewers.length === 0 && teams.length === 0) return;
-    await this.api(
-      repository,
-      'POST',
-      `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/requested_reviewers`,
-      { reviewers, team_reviewers: teams },
-    );
-  }
-
-  async comment(
-    repository: GitHubRepository,
-    pullRequest: PullRequest,
-    body: string,
-  ): Promise<void> {
-    await this.api(
-      repository,
-      'POST',
-      `repos/${repository.owner}/${repository.name}/issues/${pullRequest.number}/comments`,
-      { body },
-    );
-  }
-
-  async listComments(
-    repository: GitHubRepository,
-    pullRequests: PullRequest[],
-  ): Promise<IssueComment[]> {
-    const comments: IssueComment[] = [];
-    let pending = [...new Set(pullRequests.map(({ number }) => number))].map((number) => ({
-      number,
-      cursor: undefined as string | undefined,
-    }));
-    while (pending.length > 0) {
-      const query = issueCommentsQuery(repository, pending);
-      const pages = normalizeIssueCommentPages(
-        await this.api(repository, 'POST', 'graphql', query),
-        pending,
-      );
-      comments.push(...pages.comments);
-      pending = pages.pending;
-    }
-    return comments;
-  }
-
-  async updateComment(
-    repository: GitHubRepository,
-    comment: IssueComment,
-    body: string,
-  ): Promise<void> {
-    await this.api(
-      repository,
-      'PATCH',
-      `repos/${repository.owner}/${repository.name}/issues/comments/${comment.id}`,
-      { body },
-    );
-  }
-
-  async enableAutoMerge(repository: GitHubRepository, pullRequest: PullRequest): Promise<void> {
-    requireNodeId(pullRequest);
-    await this.api(repository, 'POST', 'graphql', {
-      query:
-        'mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){pullRequest{url}}}',
-      variables: { id: pullRequest.nodeId },
-    });
-  }
-
-  async merge(
-    repository: GitHubRepository,
-    pullRequest: PullRequest,
-    expectedHead: string,
-  ): Promise<MergeResult> {
-    return normalizeMergeResult(
-      await this.api(
-        repository,
-        'PUT',
-        `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/merge`,
-        { merge_method: 'squash', sha: expectedHead },
-      ),
-      pullRequest,
-    );
-  }
-
-  async reviewersForRerequest(
-    repository: GitHubRepository,
-    pullRequest: PullRequest,
-  ): Promise<string[]> {
-    const value = await this.api(
-      repository,
-      'GET',
-      `repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/reviews`,
-    );
-    return reviewAuthors(value);
-  }
-
-  private async api(
+  async request(
     repository: GitHubRepository,
     method: string,
     endpoint: string,
@@ -662,17 +515,21 @@ class TokenClient implements GitHubClient {
     }
     const text = await response.text();
     if (!response.ok) throw ggError(`GitHub request failed (${response.status}).`);
-    let parsed: any;
-    try {
-      parsed = text ? (JSON.parse(text) as any) : {};
-    } catch {
-      throw ggError('GitHub returned malformed JSON.');
-    }
-    if (endpoint === 'graphql' && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
-      throw ggError('GitHub GraphQL mutation failed.');
-    }
-    return parsed;
+    return parseApiResponse(text, endpoint);
   }
+}
+
+function parseApiResponse(text: string, endpoint: string): unknown {
+  let parsed: any;
+  try {
+    parsed = text.trim() ? (JSON.parse(text) as any) : {};
+  } catch {
+    throw ggError('GitHub returned malformed JSON.');
+  }
+  if (endpoint === 'graphql' && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+    throw ggError('GitHub GraphQL mutation failed.');
+  }
+  return parsed;
 }
 
 function normalizePullRequest(value: any): PullRequest {

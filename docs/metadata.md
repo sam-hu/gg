@@ -68,7 +68,7 @@ CREATE TABLE "branch_metadata" (
   "parent_branch_revision" text,
   "last_submitted_version" text,
   "state" text,
-  "children" text,
+  "sibling_order" integer not null,
   "branch_revision" text,
   "validation_result" text,
   "parent_head_revision" text
@@ -84,9 +84,10 @@ The required migration rows, in order, are:
 20260211_initial_schema
 20260212_add_validation_columns
 20260220_add_parent_head_revision
+20260717_normalize_graph_topology
 ```
 
-Their timestamps are the current ISO UTC time when the row is first created. The lock table contains `migration_lock | 0`.
+Each migration runs inside a write transaction and is recorded only after its schema change succeeds. Its timestamp is the current ISO UTC time at that point. The lock table contains `migration_lock | 0`.
 
 ## Branch fields
 
@@ -95,10 +96,12 @@ Their timestamps are the current ISO UTC time when the row is first created. The
 - `parent_branch_revision`: base commit on which this branch's commits currently sit. `gg track` initializes it to the selected branches' merge base.
 - `parent_head_revision`: the parent's head at the last metadata refresh.
 - `branch_revision`: current local branch tip at the last refresh.
-- `children`: JSON array preserving creation/append order.
+- `sibling_order`: stable ordering among branches with the same parent.
 - `validation_result`: `TRUNK`, `VALID`, `BAD_PARENT_NAME`, `BAD_PARENT_REVISION`, or `NULL`.
 - `last_submitted_version`: commit recorded after a successful push and PR create/update.
 - `state`: nullable branch state reserved for future `gg` use.
+
+`parent_branch_name` is the single source of truth for topology. Direct-child indexes are derived in memory from those parent pointers; no reciprocal child list is stored. The normalization migration preserves the ordering from the former `children` arrays in `sibling_order` before dropping that redundant column.
 
 A branch needs restacking when its parent's current head differs from `parent_branch_revision`. Only the direct child of a rewritten parent becomes stale immediately; grandchildren become stale as their own parents are replayed.
 

@@ -1,4 +1,5 @@
 import { confirm } from '@inquirer/prompts';
+import { deleteTrackedBranch } from '../branch-cleanup.js';
 import type { RepositoryContext } from '../context.js';
 import { ggError } from '../errors.js';
 import { StackGraph } from '../graph.js';
@@ -154,29 +155,16 @@ async function cleanupPullRequests(
       }
       continue;
     }
-    if (context.git.isBranchCheckedOutElsewhere(candidate.branch)) {
-      throw ggError(
-        `Cannot delete ${candidate.branch} because it is checked out in another worktree.`,
-      );
-    }
-    const wasCurrent = context.git.tryBranch() === candidate.branch;
-    if (wasCurrent) context.git.switch(row.parentBranchName);
-    const previous = context.git.head(candidate.branch);
-    const children = row.children.filter((child) => context.git.branchExists(child));
-    const metadataBefore = context.store.snapshot();
-    context.store.deleteAndReparent(candidate.branch, row.parentBranchName, children);
-    try {
-      context.git.deleteRef(candidate.branch, previous);
-    } catch (error) {
-      context.store.restore(metadataBefore);
-      if (wasCurrent) context.git.switch(candidate.branch);
-      throw error;
-    }
-    for (const child of children) {
+    const { previousRevision, reparentedChildren } = deleteTrackedBranch(
+      context,
+      candidate.branch,
+      row.parentBranchName,
+    );
+    for (const child of reparentedChildren) {
       context.output.line(`Set parent of ${child} to ${row.parentBranchName}.`);
     }
     context.output.line(
-      `Deleted branch ${candidate.branch} for PR #${candidate.pullRequest.number} (previously at ${previous})`,
+      `Deleted branch ${candidate.branch} for PR #${candidate.pullRequest.number} (previously at ${previousRevision})`,
     );
   }
   return skippedMergedRoots;

@@ -14,6 +14,7 @@ import {
 import type { Output } from '../output.js';
 import { RestackEngine } from '../restack.js';
 import { renderRelation } from '../restack-output.js';
+import { pluralize } from '../text.js';
 
 export interface SubmitOptions {
   draft?: boolean;
@@ -305,10 +306,6 @@ function renderSubmittedItem(
     `  ${chalk.dim(connector)} ${chalk.green('✔')} ${chalk.bold(`PR #${pullRequest.number}`)}  ${renderRelation(item.branch, item.base)}  ${action}`,
   );
   output.line(`  ${chalk.dim(continuation)}   ${chalk.blue.underline(pullRequest.url)}`);
-}
-
-function pluralize(word: string, count: number): string {
-  return count === 1 ? word : `${word}es`;
 }
 
 function canSkipUnchangedSubmit(

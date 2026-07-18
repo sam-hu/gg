@@ -5,6 +5,7 @@ import type { RepositoryContext } from '../context.js';
 import { buildMoveTreeChoices } from '../move-tree.js';
 import { selectWithEscape } from '../prompts.js';
 import { RestackEngine } from '../restack.js';
+import { stageChanges, stageRequestedChanges, STAGING_CHOICES } from '../staging.js';
 
 export interface BranchCreateOptions {
   message?: string[];
@@ -139,35 +140,22 @@ async function stageForCreate(
   options: BranchCreateOptions,
 ): Promise<void> {
   const { git } = context;
-  if (options.all) git.run(['add', '-A']);
-  else if (options.update) git.run(['add', '-u']);
-  else if (options.patch)
-    git.run(['add', '--patch'], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
+  const explicitlyStaged = stageRequestedChanges(git, options);
 
-  if (
-    git.hasStagedChanges() ||
-    !git.hasAnyChanges() ||
-    options.all ||
-    options.update ||
-    options.patch
-  ) {
+  if (git.hasStagedChanges() || !git.hasAnyChanges() || explicitlyStaged) {
     return;
   }
   if (!context.interactive) return;
   const action = await select({
     message: 'You have no staged changes. What would you like to do?',
     choices: [
-      { name: 'Commit all file changes (--all)', value: 'all' },
-      { name: 'Commit all changes to tracked files (--update)', value: 'update' },
-      { name: 'Select changes to commit (--patch)', value: 'patch' },
+      ...STAGING_CHOICES,
       { name: 'Create a branch with no commit', value: 'empty' },
       { name: 'Abort this operation', value: 'abort' },
     ],
   });
-  if (action === 'all') git.run(['add', '-A']);
-  else if (action === 'update') git.run(['add', '-u']);
-  else if (action === 'patch') {
-    git.run(['add', '--patch'], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
+  if (action === 'all' || action === 'update' || action === 'patch') {
+    stageChanges(git, action);
   } else if (action === 'abort') {
     throw ggError('Aborted branch creation.');
   }

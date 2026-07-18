@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import type { Output } from './output.js';
+import { pluralize } from './text.js';
 
 export interface BranchRelation {
   branch: string;
@@ -36,12 +37,10 @@ export function renderRelation(branch: string, parent: string): string {
 }
 
 function renderList(output: Output, lines: string[]): void {
-  lines.forEach((line, index) => {
-    const connector = index === lines.length - 1 ? '└─' : '├─';
-    output.line(`  ${chalk.dim(connector)} ${line}`);
-  });
-}
-
-function pluralize(word: string, count: number): string {
-  return count === 1 ? word : `${word}es`;
+  output.lines(
+    lines.map((line, index) => {
+      const connector = index === lines.length - 1 ? '└─' : '├─';
+      return `  ${chalk.dim(connector)} ${line}`;
+    }),
+  );
 }
