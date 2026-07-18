@@ -12,6 +12,8 @@ interface LeaseOwner {
   startedAt: string;
 }
 
+const recoverySuffix = '.recovery';
+
 export class MutationLease {
   private released = false;
 
@@ -29,24 +31,28 @@ export class MutationLease {
       gitDir: git.gitDir,
       startedAt: new Date().toISOString(),
     };
-    let descriptor: number | undefined;
-    try {
-      descriptor = openSync(file, 'wx', 0o600);
-      writeFileSync(descriptor, JSON.stringify(owner, null, 2), 'utf8');
-      closeSync(descriptor);
-      return new MutationLease(file, owner);
-    } catch (error) {
-      if (descriptor !== undefined) closeSync(descriptor);
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        try {
-          unlinkSync(file);
-        } catch {
-          // Preserve the original filesystem error.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let descriptor: number | undefined;
+      try {
+        descriptor = openSync(file, 'wx', 0o600);
+        writeFileSync(descriptor, JSON.stringify(owner, null, 2), 'utf8');
+        closeSync(descriptor);
+        return new MutationLease(file, owner);
+      } catch (error) {
+        if (descriptor !== undefined) closeSync(descriptor);
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          try {
+            unlinkSync(file);
+          } catch {
+            // Preserve the original filesystem error.
+          }
+          throw error;
         }
-        throw error;
+        if (attempt === 0 && recoverStaleLease(file)) continue;
+        throw leaseUnavailable(file);
       }
-      throw leaseUnavailable(file);
     }
+    throw leaseUnavailable(file);
   }
 
   release(): void {
@@ -59,6 +65,109 @@ export class MutationLease {
       // Never remove a lock that cannot be proven to belong to this process.
     }
   }
+}
+
+function recoverStaleLease(file: string): boolean {
+  const recoveryFile = `${file}${recoverySuffix}`;
+  const recoveryOwner: LeaseOwner = {
+    token: randomUUID(),
+    pid: process.pid,
+    command: 'recover mutation lock',
+    gitDir: path.dirname(file),
+    startedAt: new Date().toISOString(),
+  };
+  if (!acquireRecoveryGuard(recoveryFile, recoveryOwner)) return false;
+
+  try {
+    const owner = readLeaseOwner(file);
+    if (owner === undefined) return true;
+    if (owner === null || processIsRunning(owner.pid)) return false;
+
+    const current = readLeaseOwner(file);
+    if (current?.token !== owner.token) return false;
+    unlinkSync(file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  } finally {
+    try {
+      const current = readLeaseOwner(recoveryFile);
+      if (current?.token === recoveryOwner.token) unlinkSync(recoveryFile);
+    } catch {
+      // Never remove a recovery guard that cannot be proven to belong to this process.
+    }
+  }
+}
+
+function acquireRecoveryGuard(file: string, owner: LeaseOwner): boolean {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let descriptor: number | undefined;
+    try {
+      descriptor = openSync(file, 'wx', 0o600);
+      writeFileSync(descriptor, JSON.stringify(owner, null, 2), 'utf8');
+      closeSync(descriptor);
+      descriptor = undefined;
+      return true;
+    } catch (error) {
+      if (descriptor !== undefined) {
+        closeSync(descriptor);
+        try {
+          unlinkSync(file);
+        } catch {
+          // Preserve the original filesystem error.
+        }
+      }
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (attempt === 0 && recoverStaleRecoveryGuard(file)) continue;
+      return false;
+    }
+  }
+  return false;
+}
+
+function recoverStaleRecoveryGuard(file: string): boolean {
+  const owner = readLeaseOwner(file);
+  if (owner === undefined) return true;
+  if (owner === null || processIsRunning(owner.pid)) return false;
+
+  try {
+    const current = readLeaseOwner(file);
+    if (current?.token !== owner.token) return false;
+    unlinkSync(file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+function readLeaseOwner(file: string): LeaseOwner | null | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    return null;
+  }
+  if (!isLeaseOwner(parsed)) return null;
+  return parsed;
+}
+
+function isLeaseOwner(value: unknown): value is LeaseOwner {
+  if (typeof value !== 'object' || value === null) return false;
+  const owner = value as Partial<LeaseOwner>;
+  return (
+    typeof owner.token === 'string' &&
+    owner.token.length > 0 &&
+    typeof owner.pid === 'number' &&
+    Number.isInteger(owner.pid) &&
+    owner.pid > 0 &&
+    typeof owner.command === 'string' &&
+    typeof owner.gitDir === 'string' &&
+    typeof owner.startedAt === 'string' &&
+    Number.isFinite(Date.parse(owner.startedAt))
+  );
 }
 
 function leaseUnavailable(file: string): Error {

@@ -49,7 +49,7 @@ No branch ref changes until every commit in that branch previews cleanly. Replay
 
 ## Conflicts and recovery
 
-Every mutating command first acquires a process-owned `.gg_mutation_lock` in the common Git directory, so initialization, tracking, branch/commit changes, navigation, restacking, submission, sync, and merge cannot overlap across processes or linked worktrees. Log commands remain lock-free once schema migrations and worktree-local caches are current; maintenance needed on first open is leased. Explicit `restack`, `move`, and inserted branch creation additionally use a durable `.gg_operation_state` plus per-worktree `.gg_continue` state for rollback. The common sidecar captures:
+Every mutating command first acquires a process-owned `.gg_mutation_lock` in the common Git directory, so initialization, tracking, branch/commit changes, navigation, restacking, submission, sync, and merge cannot overlap across processes or linked worktrees. A well-formed lease whose recorded process is definitively gone is recovered automatically under a short-lived recovery guard; live or unverifiable leases remain untouched. Log commands remain lock-free once schema migrations and worktree-local caches are current; maintenance needed on first open is leased. Explicit `restack`, `move`, and inserted branch creation additionally use a durable `.gg_operation_state` plus per-worktree `.gg_continue` state for rollback. The common sidecar captures:
 
 - every local branch ref;
 - every `branch_metadata` row;

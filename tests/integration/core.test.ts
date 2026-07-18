@@ -1,6 +1,14 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, test } from 'vitest';
@@ -85,6 +93,7 @@ describe('core stacked-branch workflow', () => {
       expect(blocked.status).toBe(1);
       expect(blocked.stderr).toContain('Another gg process');
       expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/blocked').status).toBe(1);
+      expect(existsSync(`${lock}.recovery`)).toBe(false);
       expectSuccess(gg(repo, ['log', 'short']));
 
       unlinkSync(lock);
@@ -108,6 +117,53 @@ describe('core stacked-branch workflow', () => {
       expect(blockedMigration.stderr).toContain('Another gg process');
       unlinkSync(lock);
       expectSuccess(gg(repo, ['log', 'short']));
+
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          token: 'left-by-dead-process',
+          pid: 2_147_483_647,
+          command: 'merge',
+          gitDir: path.join(repo, '.git'),
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      expectSuccess(gg(repo, ['bc', 'recovered']));
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/recovered').status).toBe(0);
+      expect(existsSync(lock)).toBe(false);
+      expect(existsSync(`${lock}.recovery`)).toBe(false);
+
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          token: 'left-with-recovery-guard',
+          pid: 2_147_483_647,
+          command: 'sync',
+          gitDir: path.join(repo, '.git'),
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      writeFileSync(
+        `${lock}.recovery`,
+        JSON.stringify({
+          token: 'recovery-process-also-died',
+          pid: 2_147_483_647,
+          command: 'recover mutation lock',
+          gitDir: path.join(repo, '.git'),
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      expectSuccess(gg(repo, ['bc', 'recovered-guard']));
+      expect(existsSync(lock)).toBe(false);
+      expect(existsSync(`${lock}.recovery`)).toBe(false);
+
+      writeFileSync(lock, '{not valid json');
+      const malformed = gg(repo, ['bc', 'malformed-lock']);
+      expect(malformed.status).toBe(1);
+      expect(malformed.stderr).toContain('stale or unreadable gg mutation lock');
+      expect(readFileSync(lock, 'utf8')).toBe('{not valid json');
+      expect(existsSync(`${lock}.recovery`)).toBe(false);
+      unlinkSync(lock);
 
       expectSuccess(gg(repo, ['bc', 'allowed']));
       expect(existsSync(lock)).toBe(false);
