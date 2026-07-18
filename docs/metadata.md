@@ -6,15 +6,16 @@
 
 Git has a shared common directory for refs/configuration and a separate Git directory for each linked worktree. `gg` resolves both with `git rev-parse` rather than assuming `.git` is a directory.
 
-| Base directory   | Path                  |   Mode | Purpose                                                               |
-| ---------------- | --------------------- | -----: | --------------------------------------------------------------------- |
-| common Git dir   | `.gg_metadata.db`     | `0644` | SQLite branch graph and migration records                             |
-| common Git dir   | `.gg_repo_config`     | `0600` | Trunk configuration                                                   |
-| common Git dir   | `.gg_pr_info`         | `0600` | PR cache                                                              |
-| common Git dir   | `.gg_mutation_lock`   | `0600` | Process-owned lease serializing all repository mutations              |
-| common Git dir   | `.gg_operation_state` | `0600` | Exclusive cross-worktree rollback/restart journal while an op is live |
-| worktree Git dir | `.gg_local_pr_info`   | `0600` | Worktree-local PR cache                                               |
-| worktree Git dir | `.gg_continue`        | `0600` | Continuation hint for the owning worktree                             |
+| Base directory   | Path                         |   Mode | Purpose                                                               |
+| ---------------- | ---------------------------- | -----: | --------------------------------------------------------------------- |
+| common Git dir   | `.gg_metadata.db`            | `0644` | SQLite branch graph and migration records                             |
+| common Git dir   | `.gg_repo_config`            | `0600` | Trunk configuration                                                   |
+| common Git dir   | `.gg_pr_info`                | `0600` | PR cache                                                              |
+| common Git dir   | `.gg_mutation_lock`          | `0600` | Process-owned lease serializing all repository mutations              |
+| common Git dir   | `.gg_mutation_lock.recovery` | `0600` | Transient guard serializing stale-lease recovery                      |
+| common Git dir   | `.gg_operation_state`        | `0600` | Exclusive cross-worktree rollback/restart journal while an op is live |
+| worktree Git dir | `.gg_local_pr_info`          | `0600` | Worktree-local PR cache                                               |
+| worktree Git dir | `.gg_continue`               | `0600` | Continuation hint for the owning worktree                             |
 
 JSON files are written through a same-directory temporary file followed by `rename`, and SQLite mutations use `BEGIN IMMEDIATE` transactions.
 
@@ -126,7 +127,7 @@ On successful completion or abort it becomes `{"branchesToRestack":[]}`. It is a
 
 `.gg_operation_state` is the authoritative version-1 journal. It contains `command`, `eventId`, `ownerGitDir`, `currentBranchOverride`, the original and expected ref maps, original/expected/planned metadata snapshots, the original and remaining queues, optional pending parent changes, and the active branch's old head/base/new base. Inserted branch creation additionally records the pre-staging index and worktree trees plus the created ref's accepted checkpoints. It is created with exclusive filesystem semantics before mutation, updated atomically at each phase, and removed only after completion or a verified rollback. Its snapshots contain the same camel-case `BranchMetadata` fields documented above.
 
-`.gg_mutation_lock` is acquired with exclusive-create semantics before every command that can change refs, metadata, configuration, remotes, or GitHub state. It is shared by linked worktrees through the common Git directory and records a random owner token, process ID, command, worktree Git directory, and start time. Read-only log commands bypass it after initialization. A stale or malformed lock is never removed automatically because ownership cannot be proven safely.
+`.gg_mutation_lock` is acquired with exclusive-create semantics before every command that can change refs, metadata, configuration, remotes, or GitHub state. It is shared by linked worktrees through the common Git directory and records a random owner token, process ID, command, worktree Git directory, and start time. Read-only log commands bypass it after initialization. When the recorded process is definitively gone, the next mutating command serializes recovery through a short-lived `.gg_mutation_lock.recovery` guard, removes the unchanged stale lease, and retries acquisition once. The guard is removed in a `finally` path; if its process is terminated before cleanup, the next recovery reclaims both stale files. A live, malformed, unreadable, replaced, or otherwise unverifiable lock is never removed automatically.
 
 ## Legacy import
 
