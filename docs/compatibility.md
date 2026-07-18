@@ -38,7 +38,7 @@ The legacy branch/commit groups still execute in `gt 1.8.6`, but Graphite hides 
 | Sync            | fetch, safe trunk FF/divergence, all-stack restack, PR-state cleanup, warn-and-skip conflicts                                         | Graphite backend replaced by GitHub; `--all` currently operates on the active trunk only                  |
 | Merge           | GitHub squash merge, bottom-branch discovery, checkout-style tree confirmation, local cleanup and descendant restack                  | Merges one bottom PR rather than every PR from trunk through the current branch                           |
 | Submit          | downstack/stack scope, fork bases/heads, draft/publish, idempotent update, reviewers, comments, rerequest, auto-merge, dry run, lease | Plan lines are original; `--view`/`--web` print instructions instead of launching Graphite/GitHub UI      |
-| Force push      | automatic pinned force-with-lease; never raw force; remote must equal the last successful submission                                  | Pre-existing or concurrent remote divergence is rejected                                                  |
+| Force push      | automatic pinned force-with-lease; explicit `--force` accepts the observed remote OID; never raw force                                | Concurrent remote changes after inspection are rejected by the exact lease                                |
 
 ## Sanctioned omissions
 

@@ -98,7 +98,7 @@ If the plan is correct, create or update the stack as draft pull requests:
 gg --no-interactive submit --branch <branch> --stack --no-edit
 ```
 
-Use `--publish` only when the user wants ready-for-review PRs. Use `--reviewers`, `--team-reviewers`, or `--comment` only when requested. Do not add `--force`; gg automatically protects rewritten remote branches with a pinned force-with-lease. A normal unchanged submission is a no-op.
+Use `--publish` only when the user wants ready-for-review PRs. Use `--reviewers`, `--team-reviewers`, or `--comment` only when requested. Rewrites are automatic while the remote matches the last submitted version. Use `--force` only when the user explicitly intends to overwrite an unexpected remote tip; gg pins the freshly observed tip in an exact force-with-lease rather than using a raw force push. A normal unchanged submission is a no-op.
 
 Each PR targets its immediate parent; the bottom PR targets trunk. gg maintains stack relationships in a managed PR comment while preserving human-authored descriptions.
 

@@ -98,7 +98,7 @@ gg ss ...                 # submit --stack
 - `--dry-run` prints the plan without pushing or mutating PRs.
 - `--confirm` prints and prompts on the complete plan.
 - `--no-edit` suppresses PR-field prompts. `--publish` publishes draft PRs.
-- Rewritten branches use an automatic pinned force-with-lease. The compatibility `--force` flag is deprecated.
+- Rewritten branches use an automatic pinned force-with-lease. `--force` explicitly accepts an unexpected remote tip and pins that freshly observed OID in the lease; concurrent changes are still rejected.
 - Explicit actions such as publish, reviewers, comments, editing, `--always`, or viewing bypass the unchanged-stack no-op.
 
 ### Merge

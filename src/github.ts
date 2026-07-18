@@ -270,12 +270,16 @@ export async function authenticatedGitHubClient(
 
 class GhAuthUnavailable extends Error {}
 
+const PULL_REQUEST_LIST_JQ =
+  '[.[] | {number,node_id,html_url,state,merged_at,draft,title,body,head:{ref:.head.ref,sha:.head.sha,repo:{owner:{login:.head.repo.owner.login}}},base:{ref:.base.ref},requested_reviewers:[.requested_reviewers[]? | {login}],requested_teams:[.requested_teams[]? | {slug}]}]';
+
 interface GitHubTransport {
   request(
     repository: GitHubRepository,
     method: string,
     endpoint: string,
     body?: unknown,
+    jq?: string,
   ): Promise<unknown>;
 }
 
@@ -293,6 +297,8 @@ class GitHubOperations implements GitHubClient {
         repository,
         'GET',
         `repos/${repository.owner}/${repository.name}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+        undefined,
+        PULL_REQUEST_LIST_JQ,
       );
       if (!Array.isArray(value)) throw ggError('GitHub returned malformed pull-request data.');
       const batch = value.map(normalizePullRequest);
@@ -458,8 +464,17 @@ class GhTransport implements GitHubTransport {
     method: string,
     endpoint: string,
     body?: unknown,
+    jq?: string,
   ): Promise<unknown> {
-    const args = ['api', '--hostname', repository.host, '--method', method, endpoint];
+    const args = [
+      'api',
+      '--hostname',
+      repository.host,
+      '--method',
+      method,
+      endpoint,
+      ...(jq === undefined ? [] : ['--jq', jq]),
+    ];
     const commandOptions: {
       cwd: string;
       allowFailure: boolean;
@@ -489,6 +504,7 @@ class TokenTransport implements GitHubTransport {
     method: string,
     endpoint: string,
     body?: unknown,
+    _jq?: string,
   ): Promise<unknown> {
     const apiBase =
       repository.host === 'github.com'

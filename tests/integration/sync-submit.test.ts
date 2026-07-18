@@ -76,6 +76,50 @@ describe('sync', () => {
     });
   });
 
+  test('filters oversized pull-request responses before capturing gh output', async () => {
+    await withTempRoot('sync-large-pr-response', (root) => {
+      const repo = initRepo(root);
+      createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      expectSuccess(gg(repo, ['bc', 'a']));
+      const env = installFakeGh(root, {
+        auth: true,
+        prs: [
+          {
+            number: 1,
+            node_id: 'PR_large_1',
+            html_url: 'https://github.com/owner/repo/pull/1',
+            state: 'open',
+            draft: false,
+            title: 'A',
+            body: '',
+            head: {
+              ref: 'a',
+              sha: head(repo, 'a'),
+              repo: {
+                owner: { login: 'owner' },
+                unusedMetadata: 'x'.repeat(1_100_000),
+              },
+            },
+            base: { ref: 'main' },
+            requested_reviewers: [],
+            requested_teams: [],
+          },
+        ],
+      });
+
+      expectSuccess(gg(repo, ['sync', '--no-restack'], env));
+      const state = stateFrom(env);
+      expect(JSON.stringify(state.prs).length).toBeGreaterThan(1024 * 1024);
+      const pullRequestCall = state.calls.find(
+        (call: any) => call.method === 'GET' && String(call.endpoint).includes('/pulls?'),
+      );
+      expect(pullRequestCall.jq).toContain('requested_reviewers');
+      expect(pullRequestCall.jq).not.toContain('unusedMetadata');
+    });
+  });
+
   test('deletes a merged branch and reparents its child without orphaning metadata', async () => {
     await withTempRoot('sync-merged-cleanup', (root) => {
       const repo = initRepo(root);
@@ -471,6 +515,74 @@ describe('GitHub submission through an offline fake gh', () => {
       expect(result.stderr).toContain('changed after the last successful gg submit');
       expect(result.stderr).toContain('Refusing to overwrite');
       expect(head(bare, 'refs/heads/feature')).toBe(collaboratorHead);
+    });
+  });
+
+  test('force overwrites an unexpected remote tip with an exact lease', async () => {
+    await withTempRoot('submit-force-remote-divergence', (root) => {
+      const repo = initRepo(root);
+      const bare = createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'feature.txt', 'first\n');
+      expectSuccess(gg(repo, ['bc', 'feature', '--all', '-m', 'Feature']));
+      const localHead = head(repo, 'feature');
+      const env = installFakeGh(root, { auth: true, prs: [], nextNumber: 1 });
+      expectSuccess(gg(repo, ['submit'], env));
+
+      const updater = path.join(root, 'updater');
+      expectSuccess(command('git', ['clone', '-q', bare, updater], { cwd: root }));
+      expectSuccess(git(updater, 'config', 'user.name', 'Collaborator'));
+      expectSuccess(git(updater, 'config', 'user.email', 'collaborator@example.invalid'));
+      expectSuccess(git(updater, 'switch', '-q', '-c', 'feature', 'origin/feature'));
+      expectSuccess(git(updater, 'commit', '-q', '--allow-empty', '-m', 'Remote change'));
+      expectSuccess(git(updater, 'push', '-q', 'origin', 'feature'));
+      expect(head(bare, 'refs/heads/feature')).not.toBe(localHead);
+
+      expectSuccess(gg(repo, ['submit', '--force'], env));
+      expect(head(bare, 'refs/heads/feature')).toBe(localHead);
+    });
+  });
+
+  test('force overwrites a remote tip when submit metadata is missing', async () => {
+    await withTempRoot('submit-force-missing-metadata', (root) => {
+      const repo = initRepo(root);
+      const bare = createBareRemote(root, repo);
+      expectSuccess(git(repo, 'config', 'gg.githubRepository', 'github.com/owner/repo'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'feature.txt', 'first\n');
+      expectSuccess(gg(repo, ['bc', 'feature', '--all', '-m', 'Feature']));
+      const remoteHead = head(repo, 'feature');
+      expectSuccess(git(repo, 'push', '-q', 'origin', 'feature'));
+      const env = installFakeGh(root, {
+        auth: true,
+        prs: [
+          {
+            number: 1,
+            node_id: 'PR_existing_1',
+            html_url: 'https://github.com/owner/repo/pull/1',
+            state: 'open',
+            draft: false,
+            title: 'Feature',
+            body: '',
+            head: { ref: 'feature', sha: remoteHead },
+            base: { ref: 'main' },
+            requested_reviewers: [],
+            requested_teams: [],
+          },
+        ],
+      });
+
+      write(repo, 'feature.txt', 'rewritten\n');
+      expectSuccess(gg(repo, ['ca', '--all', '-m', 'Feature rewritten']));
+      const rewrittenHead = head(repo, 'feature');
+      const refused = gg(repo, ['submit'], env);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain('rerun with --force');
+      expect(head(bare, 'refs/heads/feature')).toBe(remoteHead);
+
+      expectSuccess(gg(repo, ['submit', '--force'], env));
+      expect(head(bare, 'refs/heads/feature')).toBe(rewrittenHead);
     });
   });
 

@@ -330,6 +330,7 @@ function canSkipUnchangedSubmit(
     options.editDescription === true ||
     options.reviewers ||
     options.teamReviewers ||
+    options.force ||
     options.always ||
     options.mergeWhenReady ||
     options.rerequestReview ||
@@ -461,9 +462,13 @@ function pushBranches(
     refspecs.push(`refs/heads/${item.branch}:${remoteRef}`);
     if (remoteHead && !git.isAncestor(remoteHead, item.localHead)) {
       if (!item.lastSubmittedVersion || remoteHead !== item.lastSubmittedVersion) {
-        throw ggError(
-          `Remote branch ${item.branch} changed after the last successful gg submit. Refusing to overwrite ${remoteHead}. Fetch and reconcile the remote branch before submitting again.`,
-        );
+        if (!options.force) {
+          throw ggError(
+            `Remote branch ${item.branch} changed after the last successful gg submit. Refusing to overwrite ${remoteHead}. Fetch and reconcile the remote branch before submitting again, or rerun with --force to overwrite this exact remote version.`,
+          );
+        }
+        leases.push(`--force-with-lease=${remoteRef}:${remoteHead}`);
+        continue;
       }
       leases.push(`--force-with-lease=${remoteRef}:${item.lastSubmittedVersion}`);
     }
