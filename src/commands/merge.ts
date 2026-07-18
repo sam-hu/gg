@@ -62,10 +62,11 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
 
   const client = await authenticatedGitHubClient(repository);
   const pullRequests = await client.listForHead(repository, bottom);
-  const pullRequest = selectPullRequest(pullRequests, bottom, graph.trunk);
+  const bottomHead = git.head(bottom);
+  const pullRequest = selectPullRequest(pullRequests, bottom, graph.trunk, bottomHead);
   let mergeSha: string | undefined;
   if (pullRequest.state === 'OPEN') {
-    mergeSha = (await client.merge(repository, pullRequest, git.head(bottom))).sha;
+    mergeSha = (await client.merge(repository, pullRequest, bottomHead)).sha;
   }
 
   fetchTrunk(context, repository.baseRemote, graph.trunk);
@@ -82,7 +83,12 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
 
   git.updateRef(graph.trunk, remoteAfter, localBefore);
   store.updateBranchRevision(graph.trunk, remoteAfter);
-  const { reparentedChildren: remainingRoots } = deleteTrackedBranch(context, bottom, graph.trunk);
+  const { reparentedChildren: remainingRoots } = deleteTrackedBranch(
+    context,
+    bottom,
+    graph.trunk,
+    bottomHead,
+  );
 
   output.line();
   output.line(
@@ -114,6 +120,7 @@ function selectPullRequest(
   pullRequests: PullRequest[],
   branch: string,
   trunk: string,
+  expectedHead: string,
 ): PullRequest {
   const open = pullRequests.filter((pullRequest) => pullRequest.state === 'OPEN');
   if (open.length > 1) {
@@ -121,6 +128,14 @@ function selectPullRequest(
   }
   const candidate = open[0] ?? pullRequests.find((pullRequest) => pullRequest.state === 'MERGED');
   if (!candidate) throw ggError(`No open pull request found for branch ${branch}.`);
+  if (!candidate.headSha) {
+    throw ggError(`GitHub did not return a head SHA for PR #${candidate.number}.`);
+  }
+  if (candidate.headSha !== expectedHead) {
+    throw ggError(
+      `PR #${candidate.number} points to ${candidate.headSha}, but local branch ${branch} is at ${expectedHead}. Refusing to merge or delete it.`,
+    );
+  }
   if (candidate.baseRef !== trunk) {
     throw ggError(
       `PR #${candidate.number} for ${branch} targets ${candidate.baseRef}, not trunk ${trunk}.`,

@@ -21,6 +21,7 @@ export interface PullRequest {
   draft: boolean;
   headRef: string;
   headOwner: string;
+  headSha: string;
   baseRef: string;
   title: string;
   body: string;
@@ -534,11 +535,11 @@ function parseApiResponse(text: string, endpoint: string): unknown {
 
 function normalizePullRequest(value: any): PullRequest {
   const merged = Boolean(value.merged_at);
-  const state = merged
-    ? 'MERGED'
-    : String(value.state ?? '').toUpperCase() === 'OPEN'
-      ? 'OPEN'
-      : 'CLOSED';
+  const rawState = String(value.state ?? '').toUpperCase();
+  let state: PullRequest['state'];
+  if (merged) state = 'MERGED';
+  else if (rawState === 'OPEN' || rawState === 'CLOSED') state = rawState;
+  else throw ggError(`GitHub returned unknown pull-request state: ${rawState || '(missing)'}.`);
   return {
     number: Number(value.number),
     nodeId: String(value.node_id ?? value.nodeId ?? ''),
@@ -551,6 +552,7 @@ function normalizePullRequest(value: any): PullRequest {
         value.headOwner ??
         String(value.head?.label ?? '').split(':')[0],
     ),
+    headSha: String(value.head?.sha ?? value.headSha ?? ''),
     baseRef: String(value.base?.ref ?? value.baseRefName ?? ''),
     title: String(value.title ?? ''),
     body: String(value.body ?? ''),

@@ -10,12 +10,18 @@ export function deleteTrackedBranch(
   context: RepositoryContext,
   branch: string,
   parent: string,
+  expectedRevision?: string,
 ): DeletedTrackedBranch {
   if (context.git.isBranchCheckedOutElsewhere(branch)) {
     throw ggError(`Cannot delete ${branch} because it is checked out in another worktree.`);
   }
 
   const previousRevision = context.git.head(branch);
+  if (expectedRevision && previousRevision !== expectedRevision) {
+    throw ggError(
+      `Cannot delete ${branch} because it changed from expected revision ${expectedRevision} to ${previousRevision}.`,
+    );
+  }
   const wasCurrent = context.git.tryBranch() === branch;
   if (wasCurrent) context.git.switch(parent);
 

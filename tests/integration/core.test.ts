@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, test } from 'vitest';
@@ -25,6 +25,7 @@ describe('core stacked-branch workflow', () => {
         { name: '20260212_add_validation_columns' },
         { name: '20260220_add_parent_head_revision' },
         { name: '20260717_normalize_graph_topology' },
+        { name: '20260717_record_submitted_base_branch' },
       ]);
       expect(
         (db.prepare('PRAGMA table_info("branch_metadata")').all() as Array<{ name: string }>).map(
@@ -61,6 +62,55 @@ describe('core stacked-branch workflow', () => {
         { branch_name: 'develop' },
       ]);
       db.close();
+    });
+  });
+
+  test('serializes mutating commands while allowing initialized read-only logs', async () => {
+    await withTempRoot('mutation-lease', (root) => {
+      const repo = initRepo(root);
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      const lock = path.join(repo, '.git', '.gg_mutation_lock');
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          token: 'held-by-test',
+          pid: process.pid,
+          command: 'submit',
+          gitDir: path.join(repo, '.git'),
+          startedAt: new Date().toISOString(),
+        }),
+      );
+
+      const blocked = gg(repo, ['bc', 'blocked']);
+      expect(blocked.status).toBe(1);
+      expect(blocked.stderr).toContain('Another gg process');
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/blocked').status).toBe(1);
+      expectSuccess(gg(repo, ['log', 'short']));
+
+      unlinkSync(lock);
+      const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
+      db.prepare('DELETE FROM kysely_migration WHERE name = ?').run(
+        '20260717_record_submitted_base_branch',
+      );
+      db.close();
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          token: 'held-during-migration',
+          pid: process.pid,
+          command: 'sync',
+          gitDir: path.join(repo, '.git'),
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      const blockedMigration = gg(repo, ['log', 'short']);
+      expect(blockedMigration.status).toBe(1);
+      expect(blockedMigration.stderr).toContain('Another gg process');
+      unlinkSync(lock);
+      expectSuccess(gg(repo, ['log', 'short']));
+
+      expectSuccess(gg(repo, ['bc', 'allowed']));
+      expect(existsSync(lock)).toBe(false);
     });
   });
 
@@ -101,6 +151,7 @@ describe('core stacked-branch workflow', () => {
         'parent_branch_name',
         'parent_branch_revision',
         'last_submitted_version',
+        'last_submitted_base_branch',
         'state',
         'sibling_order',
         'branch_revision',
@@ -112,6 +163,7 @@ describe('core stacked-branch workflow', () => {
         { name: '20260212_add_validation_columns' },
         { name: '20260220_add_parent_head_revision' },
         { name: '20260717_normalize_graph_topology' },
+        { name: '20260717_record_submitted_base_branch' },
       ]);
       expect(
         migrated
@@ -155,6 +207,91 @@ describe('core stacked-branch workflow', () => {
       expect(log.stdout).toContain('a');
       expect(log.stdout).toContain('b');
       expect(log.stdout).toContain('other');
+    });
+  });
+
+  test('validates branch names before staging changes', async () => {
+    await withTempRoot('invalid-branch-name', (root) => {
+      const repo = initRepo(root);
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+      write(repo, 'unstaged.txt', 'leave me unstaged\n');
+
+      const invalid = gg(repo, ['bc', 'bad name', '--all', '-m', 'Invalid']);
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain('Invalid branch name');
+      expect(git(repo, 'diff', '--cached', '--quiet').status).toBe(0);
+      expect(git(repo, 'status', '--short', 'unstaged.txt').stdout.trim()).toBe('?? unstaged.txt');
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/bad name').status).toBe(1);
+    });
+  });
+
+  test('aborts a conflicting inserted branch creation back to its exact starting state', async () => {
+    await withTempRoot('insert-abort', (root) => {
+      const repo = initRepo(root);
+      write(repo, 'shared.txt', 'base\n');
+      expectSuccess(git(repo, 'add', 'shared.txt'));
+      expectSuccess(git(repo, 'commit', '-q', '-m', 'shared base'));
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+
+      expectSuccess(gg(repo, ['bc', 'first-child']));
+      write(repo, 'first.txt', 'first\n');
+      expectSuccess(gg(repo, ['cc', '--all', '-m', 'First child']));
+      const firstHead = head(repo, 'first-child');
+      expectSuccess(gg(repo, ['down']));
+
+      expectSuccess(gg(repo, ['bc', 'second-child']));
+      write(repo, 'shared.txt', 'second child\n');
+      expectSuccess(gg(repo, ['cc', '--all', '-m', 'Second child']));
+      const secondHead = head(repo, 'second-child');
+      expectSuccess(gg(repo, ['down']));
+
+      write(repo, 'shared.txt', 'inserted\n');
+      const inserted = gg(repo, ['bc', 'inserted', '--insert', '--all', '-m', 'Inserted']);
+      expect(inserted.status).toBe(1);
+      expect(inserted.stderr).toContain('Hit conflict restacking second-child on inserted.');
+      expect(existsSync(path.join(repo, '.git', '.gg_operation_state'))).toBe(true);
+
+      const insertedHead = head(repo, 'inserted');
+      const externalCommit = git(
+        repo,
+        'commit-tree',
+        head(repo, 'inserted^{tree}'),
+        '-p',
+        insertedHead,
+        '-m',
+        'External inserted branch change',
+      );
+      expectSuccess(externalCommit);
+      const externalHead = externalCommit.stdout.trim();
+      expectSuccess(git(repo, 'update-ref', 'refs/heads/inserted', externalHead, insertedHead));
+      const guardedAbort = gg(repo, ['abort', '--force']);
+      expect(guardedAbort.status).toBe(1);
+      expect(guardedAbort.stderr).toContain('newly created branch inserted changed outside');
+      expectSuccess(git(repo, 'update-ref', 'refs/heads/inserted', insertedHead, externalHead));
+
+      expectSuccess(gg(repo, ['abort', '--force']));
+      expect(git(repo, 'branch', '--show-current').stdout.trim()).toBe('main');
+      expect(git(repo, 'show-ref', '--verify', '--quiet', 'refs/heads/inserted').status).toBe(1);
+      expect(head(repo, 'first-child')).toBe(firstHead);
+      expect(head(repo, 'second-child')).toBe(secondHead);
+      expect(read(repo, 'shared.txt')).toBe('inserted\n');
+      expect(git(repo, 'diff', '--cached', '--quiet').status).toBe(0);
+      expect(git(repo, 'diff', '--quiet').status).toBe(1);
+      expect(existsSync(path.join(repo, '.git', '.gg_operation_state'))).toBe(false);
+
+      const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
+      expect(
+        db
+          .prepare(
+            `SELECT branch_name, parent_branch_name FROM branch_metadata
+             WHERE branch_name IN ('first-child', 'second-child') ORDER BY branch_name`,
+          )
+          .all(),
+      ).toEqual([
+        { branch_name: 'first-child', parent_branch_name: 'main' },
+        { branch_name: 'second-child', parent_branch_name: 'main' },
+      ]);
+      db.close();
     });
   });
 

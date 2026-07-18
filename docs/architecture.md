@@ -30,6 +30,7 @@ TypeScript keeps the ref/metadata/recovery state shapes explicit in a command th
 - `src/metadata.ts` runs versioned SQLite migrations and updates metadata and JSON configuration files.
 - `src/graph.ts` derives child indexes from canonical parent pointers, then validates and traverses the tracked branch graph.
 - `src/restack.ts` previews commits with `merge-tree`, recreates clean commits with `commit-tree`, and manages conflict recovery.
+- `src/mutation-lease.ts` serializes every mutating command across processes and linked worktrees.
 - `src/github.ts` resolves GitHub remotes and implements one operation layer over authenticated `gh` and token transports.
 - `src/commands/*` contains presentation and command orchestration.
 
@@ -48,7 +49,7 @@ No branch ref changes until every commit in that branch previews cleanly. Replay
 
 ## Conflicts and recovery
 
-Explicit `restack` and `move` use a durable `.gg_operation_state` in the common Git directory plus per-worktree `.gg_continue` state. The common sidecar is created exclusively, so linked worktrees cannot begin overlapping `gg` mutations. It captures:
+Every mutating command first acquires a process-owned `.gg_mutation_lock` in the common Git directory, so initialization, tracking, branch/commit changes, navigation, restacking, submission, sync, and merge cannot overlap across processes or linked worktrees. Log commands remain lock-free once schema migrations and worktree-local caches are current; maintenance needed on first open is leased. Explicit `restack`, `move`, and inserted branch creation additionally use a durable `.gg_operation_state` plus per-worktree `.gg_continue` state for rollback. The common sidecar captures:
 
 - every local branch ref;
 - every `branch_metadata` row;
@@ -62,6 +63,8 @@ When preview detects a conflict, `gg` checks that the worktree is clean, checks 
 
 Before a clean step mutates a ref or SQLite, the journal durably records both the current accepted state and the complete planned post-step state. Reparenting plus branch/base revision updates occur in one SQLite transaction. A restart can therefore distinguish a crash before the step from a crash after it and safely restore/replay the command. Commit-propagation and sync's warn-and-skip policy use the same per-branch journal path.
 
+`branch create --insert` validates its name, parent, selected direct children, and linked-worktree ownership before staging. It then journals the original refs, metadata, index, and complete worktree tree before creating the branch. Branch creation and all selected child restacks run as one operation; abort restores the exact staged/unstaged state and deletes the created ref only after verifying that it has not changed externally.
+
 `commit create` and `commit amend` deliberately use a different conflict policy: the commit succeeds, clean descendants are replayed, and the first conflicting descendant remains untouched with a warning. No live rebase is left behind. `sync` similarly warns, skips the failed subtree, and proceeds with independent stacks.
 
 ## Submission transaction boundary
@@ -70,20 +73,22 @@ Submission performs all read-only validation first: repository, authentication, 
 
 1. inspect the exact remote branch OID;
 2. push normally when possible;
-3. automatically use a pinned `--force-with-lease` for a non-fast-forward update;
+3. for a non-fast-forward update, require the remote OID to equal the branch's last successfully submitted OID, then use that exact OID in `--force-with-lease`;
 4. create or update the branch's PR;
 5. discover open PRs across every tracked branch and create or update one managed stack comment on each PR;
-6. record the submitted commit only after the PR operations and stack-comment refresh succeed.
+6. record the submitted commit and PR base only after the PR operations and stack-comment refresh succeed.
 
 A later failure can leave already-completed lower branches submitted. The output makes this visible, and rerunning is idempotent because PRs are selected by exact head branch and existing open PRs are updated rather than duplicated.
 
 Stack comments are rebuilt by connected root stack after every successful submission. Each comment links every open PR in bottom-to-top graph order and bolds the PR on which the comment appears. A hidden marker lets `gg` update a stale comment in place or recreate a missing one, so any stack-member push self-heals the connected stack. Adding an upstack branch or moving branches between roots refreshes both the old and new stack without accumulating bot comments. If a later operation fails after at least one push succeeds, `gg` still attempts the repair before reporting the original submission error. Legacy `Stacked branch`/`Base` metadata is removed from PR descriptions on the next ordinary description update while any following human-authored description is preserved.
 
-Before GitHub authentication, an ordinary submit compares every selected local head with its last submitted version and verifies that the stored parent revision is still current. If all match, it exits with one unchanged-status line and performs no remote or metadata operations. Options that request an explicit GitHub or presentation action bypass this fast path.
+Before GitHub authentication, an ordinary submit compares every selected local head and intended PR base with its last successful submission and verifies that the stored parent revision is still current. If all match, it exits with one unchanged-status line and performs no remote or metadata operations. Options that request an explicit GitHub or presentation action bypass this fast path.
 
 ## Merge boundary
 
-`gg merge` first reuses the checkout topology renderer to show the current branch's ancestor path through trunk and its descendant subtree, then requires a default-yes confirmation. It performs the irreversible GitHub operation only after validating the tracked stack, clean worktree, linked-worktree ownership, and fast-forward relationship between local and remote trunk. The merge request pins the expected PR head SHA and uses GitHub's squash method. After GitHub reports success, gg fetches trunk, removes the merged bottom branch locally, reparents its children, and uses the normal durable restack journal for the remaining descendants. A rerun can finish local cleanup when GitHub already reports the PR as merged.
+`gg merge` first reuses the checkout topology renderer to show the current branch's ancestor path through trunk and its descendant subtree, then requires a default-yes confirmation. It performs the irreversible GitHub operation only after validating the tracked stack, clean worktree, linked-worktree ownership, fast-forward relationship between local and remote trunk, and exact equality between the PR head SHA and local bottom-branch tip. The merge request pins that SHA and uses GitHub's squash method. After GitHub reports success, gg fetches trunk, removes the merged bottom branch only if the local tip still equals the validated SHA, reparents its children, and uses the normal durable restack journal for the remaining descendants. A rerun can finish local cleanup when GitHub already reports the same PR head as merged.
+
+`gg sync` applies the same identity rule to cleanup: a closed or merged PR is eligible only when its reported head SHA exactly equals the current local branch tip. Unknown PR states and missing head SHAs are rejected rather than interpreted as safe deletion signals.
 
 ## Trace-free local installation
 

@@ -11,6 +11,7 @@ Git has a shared common directory for refs/configuration and a separate Git dire
 | common Git dir   | `.gg_metadata.db`     | `0644` | SQLite branch graph and migration records                             |
 | common Git dir   | `.gg_repo_config`     | `0600` | Trunk configuration                                                   |
 | common Git dir   | `.gg_pr_info`         | `0600` | PR cache                                                              |
+| common Git dir   | `.gg_mutation_lock`   | `0600` | Process-owned lease serializing all repository mutations              |
 | common Git dir   | `.gg_operation_state` | `0600` | Exclusive cross-worktree rollback/restart journal while an op is live |
 | worktree Git dir | `.gg_local_pr_info`   | `0600` | Worktree-local PR cache                                               |
 | worktree Git dir | `.gg_continue`        | `0600` | Continuation hint for the owning worktree                             |
@@ -67,6 +68,7 @@ CREATE TABLE "branch_metadata" (
   "parent_branch_name" text,
   "parent_branch_revision" text,
   "last_submitted_version" text,
+  "last_submitted_base_branch" text,
   "state" text,
   "sibling_order" integer not null,
   "branch_revision" text,
@@ -85,6 +87,7 @@ The required migration rows, in order, are:
 20260212_add_validation_columns
 20260220_add_parent_head_revision
 20260717_normalize_graph_topology
+20260717_record_submitted_base_branch
 ```
 
 Each migration runs inside a write transaction and is recorded only after its schema change succeeds. Its timestamp is the current ISO UTC time at that point. The lock table contains `migration_lock | 0`.
@@ -99,6 +102,7 @@ Each migration runs inside a write transaction and is recorded only after its sc
 - `sibling_order`: stable ordering among branches with the same parent.
 - `validation_result`: `TRUNK`, `VALID`, `BAD_PARENT_NAME`, `BAD_PARENT_REVISION`, or `NULL`.
 - `last_submitted_version`: commit recorded after a successful push and PR create/update.
+- `last_submitted_base_branch`: PR base recorded by the same successful submission. Together with `last_submitted_version`, it prevents a topology-only move from being mistaken for an unchanged stack.
 - `state`: nullable branch state reserved for future `gg` use.
 
 `parent_branch_name` is the single source of truth for topology. Direct-child indexes are derived in memory from those parent pointers; no reciprocal child list is stored. The normalization migration preserves the ordering from the former `children` arrays in `sibling_order` before dropping that redundant column.
@@ -120,7 +124,9 @@ While restack-derived mutation is active, `.gg_continue` has the fields below (u
 
 On successful completion or abort it becomes `{"branchesToRestack":[]}`. It is a lightweight hint, not the authoritative rollback record.
 
-`.gg_operation_state` is the authoritative version-1 journal. It contains `command`, `eventId`, `ownerGitDir`, `currentBranchOverride`, the original and expected ref maps, original/expected/planned metadata snapshots, the original and remaining queues, optional pending parent changes, and the active branch's old head/base/new base. It is created with exclusive filesystem semantics before mutation, updated atomically at each phase, and removed only after completion or a verified rollback. Its snapshots contain the same camel-case `BranchMetadata` fields documented above.
+`.gg_operation_state` is the authoritative version-1 journal. It contains `command`, `eventId`, `ownerGitDir`, `currentBranchOverride`, the original and expected ref maps, original/expected/planned metadata snapshots, the original and remaining queues, optional pending parent changes, and the active branch's old head/base/new base. Inserted branch creation additionally records the pre-staging index and worktree trees plus the created ref's accepted checkpoints. It is created with exclusive filesystem semantics before mutation, updated atomically at each phase, and removed only after completion or a verified rollback. Its snapshots contain the same camel-case `BranchMetadata` fields documented above.
+
+`.gg_mutation_lock` is acquired with exclusive-create semantics before every command that can change refs, metadata, configuration, remotes, or GitHub state. It is shared by linked worktrees through the common Git directory and records a random owner token, process ID, command, worktree Git directory, and start time. Read-only log commands bypass it after initialization. A stale or malformed lock is never removed automatically because ownership cannot be proven safely.
 
 ## Legacy import
 

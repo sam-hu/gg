@@ -17,6 +17,7 @@ export interface BranchMetadata {
   parentBranchName: string | null;
   parentBranchRevision: string | null;
   lastSubmittedVersion: string | null;
+  lastSubmittedBaseBranch: string | null;
   state: string | null;
   siblingOrder: number;
   branchRevision: string | null;
@@ -29,6 +30,7 @@ interface DatabaseRow {
   parent_branch_name: string | null;
   parent_branch_revision: string | null;
   last_submitted_version: string | null;
+  last_submitted_base_branch: string | null;
   state: string | null;
   sibling_order: number;
   branch_revision: string | null;
@@ -80,6 +82,12 @@ const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       normalizeGraphTopology(db);
     },
   },
+  {
+    name: '20260717_record_submitted_base_branch',
+    up(db) {
+      addColumn(db, 'last_submitted_base_branch', 'text');
+    },
+  },
 ];
 
 export interface RepoConfig {
@@ -129,8 +137,40 @@ export class MetadataStore {
     return store;
   }
 
+  static openReadOnly(git: Git): MetadataStore {
+    const db = new DatabaseSync(path.join(git.commonGitDir, '.gg_metadata.db'), {
+      readOnly: true,
+    });
+    return new MetadataStore(git, db);
+  }
+
   static isInitialized(git: Git): boolean {
     return existsSync(path.join(git.commonGitDir, '.gg_repo_config'));
+  }
+
+  static canOpenReadOnly(git: Git): boolean {
+    if (!MetadataStore.isInitialized(git)) return false;
+    const dbPath = path.join(git.commonGitDir, '.gg_metadata.db');
+    if (
+      !existsSync(dbPath) ||
+      !existsSync(path.join(git.commonGitDir, '.gg_pr_info')) ||
+      !existsSync(path.join(git.gitDir, '.gg_local_pr_info'))
+    ) {
+      return false;
+    }
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      const latest = SCHEMA_MIGRATIONS.at(-1)?.name;
+      if (!latest) return false;
+      const row = db.prepare('SELECT name FROM kysely_migration WHERE name = ?').get(latest) as
+        { name?: string } | undefined;
+      return row?.name === latest;
+    } catch {
+      return false;
+    } finally {
+      db?.close();
+    }
   }
 
   close(): void {
@@ -181,6 +221,7 @@ export class MetadataStore {
         parentBranchName: null,
         parentBranchRevision: null,
         lastSubmittedVersion: existing?.lastSubmittedVersion ?? null,
+        lastSubmittedBaseBranch: existing?.lastSubmittedBaseBranch ?? null,
         state: existing?.state ?? null,
         siblingOrder: 0,
         branchRevision: trunkRevision,
@@ -212,13 +253,15 @@ export class MetadataStore {
       .prepare(
         `INSERT INTO branch_metadata (
           branch_name, parent_branch_name, parent_branch_revision,
-          last_submitted_version, state, sibling_order, branch_revision,
+          last_submitted_version, last_submitted_base_branch, state,
+          sibling_order, branch_revision,
           validation_result, parent_head_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(branch_name) DO UPDATE SET
           parent_branch_name = excluded.parent_branch_name,
           parent_branch_revision = excluded.parent_branch_revision,
           last_submitted_version = excluded.last_submitted_version,
+          last_submitted_base_branch = excluded.last_submitted_base_branch,
           state = excluded.state,
           sibling_order = excluded.sibling_order,
           branch_revision = excluded.branch_revision,
@@ -230,6 +273,7 @@ export class MetadataStore {
         row.parentBranchName,
         row.parentBranchRevision,
         row.lastSubmittedVersion,
+        row.lastSubmittedBaseBranch ?? null,
         row.state,
         row.siblingOrder,
         row.branchRevision,
@@ -277,6 +321,7 @@ export class MetadataStore {
         parentBranchName: parent,
         parentBranchRevision: parentRevision,
         lastSubmittedVersion: previous?.lastSubmittedVersion ?? null,
+        lastSubmittedBaseBranch: previous?.lastSubmittedBaseBranch ?? null,
         state: previous?.state ?? null,
         siblingOrder:
           previous?.parentBranchName === parent
@@ -323,14 +368,17 @@ export class MetadataStore {
     if (!row) throw new Error(`Missing metadata for ${branch}`);
     if (newParent && row.parentBranchName !== newParent) {
       if (!rows.has(newParent)) throw new Error(`Missing metadata for parent ${newParent}`);
-      row.parentBranchName = newParent;
       row.siblingOrder =
         Math.max(
           -1,
           ...snapshot.rows
-            .filter((candidate) => candidate.parentBranchName === newParent)
+            .filter(
+              (candidate) =>
+                candidate.branchName !== branch && candidate.parentBranchName === newParent,
+            )
             .map((candidate) => candidate.siblingOrder),
         ) + 1;
+      row.parentBranchName = newParent;
     }
     row.parentBranchRevision = parentRevision;
     row.parentHeadRevision = parentRevision;
@@ -449,6 +497,7 @@ export class MetadataStore {
           parentBranchName: null,
           parentBranchRevision: null,
           lastSubmittedVersion: null,
+          lastSubmittedBaseBranch: null,
           state: null,
           siblingOrder: 0,
           branchRevision: this.git.tryHead(item.parent) ?? null,
@@ -481,6 +530,7 @@ function fromRow(row: DatabaseRow): BranchMetadata {
     parentBranchName: row.parent_branch_name,
     parentBranchRevision: row.parent_branch_revision,
     lastSubmittedVersion: row.last_submitted_version,
+    lastSubmittedBaseBranch: row.last_submitted_base_branch,
     state: row.state,
     siblingOrder: row.sibling_order,
     branchRevision: row.branch_revision,
@@ -551,6 +601,7 @@ function normalizeGraphTopology(db: DatabaseSync): void {
       "parent_branch_name" text,
       "parent_branch_revision" text,
       "last_submitted_version" text,
+      "last_submitted_base_branch" text,
       "state" text,
       "sibling_order" integer not null,
       "branch_revision" text,
@@ -561,9 +612,10 @@ function normalizeGraphTopology(db: DatabaseSync): void {
   const insert = db.prepare(`
     INSERT INTO "branch_metadata_next" (
       branch_name, parent_branch_name, parent_branch_revision,
-      last_submitted_version, state, sibling_order, branch_revision,
+      last_submitted_version, last_submitted_base_branch, state,
+      sibling_order, branch_revision,
       validation_result, parent_head_revision
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const row of rows) {
     insert.run(
@@ -571,6 +623,7 @@ function normalizeGraphTopology(db: DatabaseSync): void {
       row.parent_branch_name,
       row.parent_branch_revision,
       row.last_submitted_version,
+      null,
       row.state,
       siblingOrders.get(row.branch_name) ?? 0,
       row.branch_revision,

@@ -1,5 +1,6 @@
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { UserError, ggError } from './errors.js';
 
@@ -36,6 +37,12 @@ export interface GitResult {
   status: number;
   stdout: string;
   stderr: string;
+}
+
+export interface WorktreeSnapshot {
+  branch: string;
+  indexTree: string;
+  worktreeTree: string;
 }
 
 export function runGitPassthrough(cwd: string, args: string[], debug = false): number {
@@ -165,6 +172,10 @@ export class Git {
     return output ? output.split('\n').filter(Boolean) : [];
   }
 
+  isValidBranchName(branch: string): boolean {
+    return this.succeeds(['check-ref-format', '--branch', branch]);
+  }
+
   head(revision = 'HEAD'): string {
     const cached = this.branchHeadCache?.get(revision);
     if (cached) return cached;
@@ -190,6 +201,29 @@ export class Git {
 
   hasAnyChanges(): boolean {
     return this.capture(['status', '--porcelain=v1', '--untracked-files=normal']).length > 0;
+  }
+
+  captureWorktreeSnapshot(): WorktreeSnapshot {
+    const branch = this.branch();
+    const head = this.head();
+    const indexTree = this.capture(['write-tree']);
+    const temporary = mkdtempSync(path.join(os.tmpdir(), 'gg-worktree-index-'));
+    const temporaryIndex = path.join(temporary, 'index');
+    const env = { GIT_INDEX_FILE: temporaryIndex };
+    try {
+      this.run(['read-tree', head], { env });
+      this.run(['add', '-A'], { env });
+      const worktreeTree = this.capture(['write-tree'], { env });
+      return { branch, indexTree, worktreeTree };
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  }
+
+  restoreWorktreeSnapshot(snapshot: WorktreeSnapshot): void {
+    this.run(['symbolic-ref', 'HEAD', `refs/heads/${snapshot.branch}`]);
+    this.run(['read-tree', '--reset', '-u', snapshot.worktreeTree]);
+    this.run(['read-tree', snapshot.indexTree]);
   }
 
   hasRebase(): boolean {
