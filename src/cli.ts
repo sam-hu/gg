@@ -263,7 +263,7 @@ function configureSubmit(command: Command, stackDefault: boolean): void {
     .option('--dry-run', 'show the plan without pushing or mutating PRs')
     .option('-c, --confirm', 'show and confirm the complete plan')
     .option('-u, --update-only', 'only update branches with open PRs')
-    .option('-f, --force', 'deprecated compatibility flag; branch rewrites are automatic')
+    .option('-f, --force', 'overwrite an unexpected remote branch tip with an exact lease')
     .option('--always', 'push branches even when the remote tip matches')
     .option('--branch <branch>', 'submit from this branch')
     .option('-m, --merge-when-ready', 'enable GitHub auto-merge')

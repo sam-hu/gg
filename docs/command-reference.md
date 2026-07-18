@@ -128,7 +128,7 @@ Default scope is the current branch plus downstack ancestors. `--stack` includes
 - `-d/--draft`, `-p/--publish`
 - `--restack` (with `--dry-run`, the plan assumes that the announced restack will succeed)
 - `--dry-run`, `-c/--confirm`, `-u/--update-only`
-- `-f/--force` (deprecated compatibility flag; a rewrite is allowed only when the remote still equals the last successfully submitted OID, which is pinned in `--force-with-lease`)
+- `-f/--force` explicitly overwrites an unexpected remote branch tip; the freshly inspected remote OID is pinned in `--force-with-lease`, so a concurrent update is still rejected
 - `--always`, `--branch`, `--target-trunk`, `-s/--stack`/`--no-stack`
 - `-e/--edit`, `-n/--no-edit`, title/description-specific edit flags, and `--cli`
 - `-r/--reviewers`, `-t/--team-reviewers`, `--rerequest-review`

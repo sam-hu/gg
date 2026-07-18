@@ -37,7 +37,9 @@ if (args.includes('--input')) {
   const input = readFileSync(0, 'utf8');
   body = input ? JSON.parse(input) : undefined;
 }
-state.calls.push({ method, endpoint, body });
+const jqIndex = args.indexOf('--jq');
+const jq = jqIndex >= 0 ? args[jqIndex + 1] : undefined;
+state.calls.push({ method, endpoint, body, jq });
 
 let output = {};
 if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
@@ -46,6 +48,7 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
   const url = new URL(`https://fake.invalid/${endpoint}`);
   const head = url.searchParams.get('head')?.split(':').slice(1).join(':');
   output = head ? (state.prs ?? []).filter((pr) => pr.head.ref === head) : (state.prs ?? []);
+  if (jq !== undefined) output = output.map(projectPullRequest);
 } else if (method === 'GET' && endpoint?.endsWith('/reviews')) {
   output = state.reviews ?? [];
 } else if (method === 'GET' && endpoint?.includes('/issues/') && endpoint.includes('/comments?')) {
@@ -156,3 +159,24 @@ if (method === 'GET' && /^repos\/[^/]+\/[^/?]+$/.test(endpoint ?? '')) {
 
 writeFileSync(statePath, JSON.stringify(state, null, 2));
 process.stdout.write(JSON.stringify(output));
+
+function projectPullRequest(pr) {
+  return {
+    number: pr.number,
+    node_id: pr.node_id,
+    html_url: pr.html_url,
+    state: pr.state,
+    merged_at: pr.merged_at,
+    draft: pr.draft,
+    title: pr.title,
+    body: pr.body,
+    head: {
+      ref: pr.head?.ref,
+      sha: pr.head?.sha,
+      repo: { owner: { login: pr.head?.repo?.owner?.login } },
+    },
+    base: { ref: pr.base?.ref },
+    requested_reviewers: (pr.requested_reviewers ?? []).map(({ login }) => ({ login })),
+    requested_teams: (pr.requested_teams ?? []).map(({ slug }) => ({ slug })),
+  };
+}
