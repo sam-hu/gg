@@ -108,11 +108,11 @@ An explicit `restack` or `move` conflict leaves a normal Git rebase in progress.
 
 1. Inspect the conflict with `git status` and resolve only the intended files.
 2. Stage resolved files explicitly with `git add <paths>`.
-3. Run `gg continue`. Use `gg continue --all` only when every remaining change should be staged.
+3. Run `gg continue`. Use `gg continue --all` only when every remaining change should be staged. You may instead run `git rebase --continue`; after Git finishes the rebase, the next stack-changing `gg` command adopts the result and resumes the saved queue.
 4. If the operation should be abandoned, run `gg abort --force` to restore the captured refs and metadata.
 5. Re-run `gg log short --stack` and the relevant tests.
 
-Do not start another stack mutation while recovery is pending. Commit/amend and sync conflicts follow a warn-and-skip policy instead of leaving a rebase; inspect their output and explicitly restack any untouched descendants.
+Do not start another stack mutation while Git still reports a rebase in progress. Commit/amend and sync conflicts follow a warn-and-skip policy instead of leaving a rebase; inspect their output and explicitly restack any untouched descendants.
 
 ## Merge and sync cautiously
 

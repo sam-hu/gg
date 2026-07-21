@@ -72,7 +72,7 @@ gg abort --force
 - Default restack scope is the current branch's connected stack segment.
 - `--downstack` includes ancestors, `--upstack` includes descendants, and `--only` selects only the named branch.
 - Default move scope moves the source and its descendants. `move --only` reparents former children downstack before moving the source.
-- Explicit restack and move use durable operation state and can be continued or aborted after a conflict.
+- Explicit restack and move use durable operation state and can be continued or aborted after a conflict. A rebase finished with `git rebase --continue` is adopted by the next stack-changing `gg` command, which updates metadata and resumes the saved queue first.
 
 ### Sync
 

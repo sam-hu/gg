@@ -67,7 +67,7 @@ gg l
 gg s
 ```
 
-When an explicit restack or move hits a conflict, resolve files using the normal Git index and run `gg continue`. Use `gg abort --force` to restore every branch ref and metadata row captured at the start of the interrupted operation.
+When an explicit restack or move hits a conflict, resolve files using the normal Git index, then run either `gg continue` or `git rebase --continue`. When Git completes the rebase directly, the next stack-changing `gg` command adopts the rebased branch, updates gg's metadata, and resumes the saved branch queue before starting the requested operation. Use `gg abort --force` to restore every branch ref and metadata row captured at the start of the interrupted operation.
 
 ## Development
 

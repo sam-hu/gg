@@ -18,6 +18,59 @@ import {
 } from '../helpers.js';
 
 describe('sync', () => {
+  test('adopts a rebase completed with Git before starting a new sync', async () => {
+    await withTempRoot('sync-after-git-rebase-continue', (root) => {
+      const repo = initRepo(root);
+      write(repo, 'shared.txt', 'base\n');
+      expectSuccess(git(repo, 'add', 'shared.txt'));
+      expectSuccess(git(repo, 'commit', '-q', '-m', 'shared base'));
+      createBareRemote(root, repo);
+      expectSuccess(gg(repo, ['init', '--trunk', 'main']));
+
+      write(repo, 'shared.txt', 'parent\n');
+      expectSuccess(gg(repo, ['bc', 'a', '--all', '-m', 'parent']));
+      write(repo, 'shared.txt', 'child\n');
+      expectSuccess(gg(repo, ['bc', 'b', '--all', '-m', 'child']));
+      write(repo, 'descendant.txt', 'descendant\n');
+      expectSuccess(gg(repo, ['bc', 'c', '--all', '-m', 'descendant']));
+
+      expectSuccess(gg(repo, ['down', '2']));
+      write(repo, 'shared.txt', 'parent changed\n');
+      expectSuccess(gg(repo, ['ca', '--all', '-m', 'parent changed']));
+      expectSuccess(gg(repo, ['up']));
+
+      const conflict = gg(repo, ['restack']);
+      expect(conflict.status).toBe(1);
+      expect(conflict.stderr).toContain('Hit conflict restacking b on a.');
+      write(repo, 'shared.txt', 'resolved with Git\n');
+      expectSuccess(git(repo, 'add', 'shared.txt'));
+      expectSuccess(git(repo, '-c', 'core.editor=true', 'rebase', '--continue'));
+      const externallyRebasedHead = head(repo, 'b');
+      expect(existsSync(path.join(repo, '.git', 'rebase-merge'))).toBe(false);
+      expect(existsSync(path.join(repo, '.git', '.gg_operation_state'))).toBe(true);
+
+      const synced = gg(repo, ['sync', '--no-restack']);
+      expectSuccess(synced);
+      expect(synced.stdout).toContain('Recorded rebase completed with Git for b.');
+      expect(head(repo, 'b')).toBe(externallyRebasedHead);
+      expect(git(repo, 'merge-base', '--is-ancestor', 'b', 'c').status).toBe(0);
+      expect(existsSync(path.join(repo, '.git', '.gg_operation_state'))).toBe(false);
+
+      const db = new DatabaseSync(path.join(repo, '.git', '.gg_metadata.db'));
+      expect(
+        db
+          .prepare(
+            'SELECT parent_branch_revision, branch_revision FROM branch_metadata WHERE branch_name = ?',
+          )
+          .get('b'),
+      ).toEqual({
+        parent_branch_revision: head(repo, 'a'),
+        branch_revision: externallyRebasedHead,
+      });
+      db.close();
+    });
+  });
+
   test('fast-forwards trunk and restacks multiple independent stacks', async () => {
     await withTempRoot('sync', (root) => {
       const repo = initRepo(root);
