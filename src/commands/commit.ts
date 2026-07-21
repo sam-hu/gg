@@ -38,7 +38,7 @@ async function commitOrAmend(
   await context.ensureInitialized();
   const { git, store, output } = context;
   const engine = new RestackEngine(git, store, output, context.verify);
-  engine.ensureNotBlocked();
+  await engine.ensureNotBlocked();
   const graph = new StackGraph(git, store);
   const branch = git.branch();
   const branchMetadata = graph.require(branch);

@@ -18,7 +18,7 @@ export async function mergeBottomBranch(context: RepositoryContext): Promise<voi
   await context.ensureInitialized();
   const { git, store, output } = context;
   const engine = new RestackEngine(git, store, output, context.verify);
-  engine.ensureNotBlocked();
+  await engine.ensureNotBlocked();
 
   const graph = new StackGraph(git, store);
   const current = git.branch();

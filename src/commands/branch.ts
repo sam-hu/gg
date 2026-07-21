@@ -28,7 +28,7 @@ export async function trackBranch(
 ): Promise<void> {
   await context.ensureInitialized();
   const { git, store, output } = context;
-  new RestackEngine(git, store, output, context.verify).ensureNotBlocked();
+  await new RestackEngine(git, store, output, context.verify).ensureNotBlocked();
   const graph = new StackGraph(git, store);
   const branch = suppliedBranch ?? git.branch();
 
@@ -80,7 +80,7 @@ export async function createBranch(
   await context.ensureInitialized();
   const { git, store, output } = context;
   const engine = new RestackEngine(git, store, output, context.verify);
-  engine.ensureNotBlocked();
+  await engine.ensureNotBlocked();
   const graph = new StackGraph(git, store);
   const originalBranch = git.branch();
   const parent = options.onto ?? originalBranch;

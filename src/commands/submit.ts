@@ -59,7 +59,7 @@ export async function submit(context: RepositoryContext, options: SubmitOptions)
   await context.ensureInitialized();
   const { git, store, output } = context;
   const engine = new RestackEngine(git, store, output, context.verify);
-  engine.ensureNotBlocked();
+  await engine.ensureNotBlocked();
   let graph = new StackGraph(git, store);
   const anchor = options.branch ?? git.branch();
   graph.require(anchor);

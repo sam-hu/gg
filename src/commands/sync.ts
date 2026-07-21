@@ -28,7 +28,7 @@ export async function sync(context: RepositoryContext, options: SyncOptions): Pr
   await context.ensureInitialized();
   const { git, store, output } = context;
   const engine = new RestackEngine(git, store, output, context.verify);
-  engine.ensureNotBlocked();
+  await engine.ensureNotBlocked();
   let graph = new StackGraph(git, store);
   const remote = resolveRemote(git, graph.trunk);
   const repository = resolveGitHubRepository(git, remote);

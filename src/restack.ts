@@ -87,7 +87,7 @@ export class RestackEngine {
     scope: 'stack' | 'downstack' | 'upstack' | 'only',
     command: string,
   ): Promise<void> {
-    this.ensureNotBlocked();
+    await this.ensureNotBlocked();
     const graph = new StackGraph(this.git, this.store);
     graph.require(branch);
     const queue = graph.restackOrder(branch, scope);
@@ -113,7 +113,7 @@ export class RestackEngine {
   }
 
   async move(source: string, target: string, only: boolean, command: string): Promise<void> {
-    this.ensureNotBlocked();
+    await this.ensureNotBlocked();
     const graph = new StackGraph(this.git, this.store);
     const row = graph.require(source);
     graph.require(target);
@@ -163,7 +163,7 @@ export class RestackEngine {
     worktree: WorktreeSnapshot,
     createBranch: (checkpoint: () => void) => Promise<void>,
   ): Promise<void> {
-    this.ensureNotBlocked();
+    await this.ensureNotBlocked();
     const graph = new StackGraph(this.git, this.store);
     graph.require(parent);
     const pendingParents: Record<string, string> = {};
@@ -254,6 +254,7 @@ export class RestackEngine {
     }
     this.requireOwningWorktree(state, 'continue');
     if (!this.git.hasRebase()) {
+      if (await this.resumeExternallyCompletedRebase(state)) return;
       await this.restartInterruptedCleanOperation(state);
       return;
     }
@@ -285,29 +286,8 @@ export class RestackEngine {
       );
     }
 
-    const active = state.active;
-    const branchHead = this.git.head(active.branch);
-    state.expectedRefs[active.branch] = branchHead;
-    this.prepareMetadataExpectation(
-      state,
-      active.branch,
-      active.newBase,
-      branchHead,
-      active.pendingParent,
-    );
-    this.store.updateAfterRestack(active.branch, active.newBase, branchHead, active.pendingParent);
-    this.commitMetadataExpectation(state);
-    this.output.line(`Resolved rebase conflict for ${active.branch}.`);
-    delete state.active;
-    this.writeState(state);
-    try {
-      await this.continueQueue(state, { command: state.command, haltOnConflict: true });
-      this.finishState(state);
-    } catch (error) {
-      if (error instanceof ConflictHalt) throw error;
-      this.rollback(state);
-      throw error;
-    }
+    this.recordCompletedRebase(state, state.active, this.git.head(state.active.branch));
+    await this.resumeQueue(state);
   }
 
   abort(): string {
@@ -318,17 +298,23 @@ export class RestackEngine {
     return state.command;
   }
 
-  ensureNotBlocked(): void {
+  async ensureNotBlocked(): Promise<void> {
     if (this.git.hasRebase()) {
       throw ggError(
         'This operation is blocked during a rebase.\nResolve it with gg continue or cancel it with gg abort.',
       );
     }
-    if (existsSync(this.store.operationPath)) {
-      throw ggError(
-        'A gg operation was interrupted. Run gg continue to resume it or gg abort to restore its starting state.',
-      );
+    const state = this.readState();
+    if (!state) return;
+    if (
+      state.ownerGitDir === this.git.gitDir &&
+      (await this.resumeExternallyCompletedRebase(state))
+    ) {
+      return;
     }
+    throw ggError(
+      'A gg operation was interrupted. Run gg continue to resume it or gg abort to restore its starting state.',
+    );
   }
 
   createState(command: string, queue: string[]): OperationState {
@@ -424,6 +410,54 @@ export class RestackEngine {
     } catch (error) {
       if (error instanceof ConflictHalt) throw error;
       this.rollback(restarted);
+      throw error;
+    }
+  }
+
+  private async resumeExternallyCompletedRebase(state: OperationState): Promise<boolean> {
+    const active = state.active;
+    if (!active) return false;
+    const branchHead = this.git.tryHead(active.branch);
+    if (!branchHead || !this.isCompletedActiveRebase(state, active.branch, branchHead)) {
+      return false;
+    }
+    this.recordCompletedRebase(state, active, branchHead, true);
+    await this.resumeQueue(state);
+    return true;
+  }
+
+  private recordCompletedRebase(
+    state: OperationState,
+    active: ActiveRebase,
+    branchHead: string,
+    external = false,
+  ): void {
+    state.expectedRefs[active.branch] = branchHead;
+    this.prepareMetadataExpectation(
+      state,
+      active.branch,
+      active.newBase,
+      branchHead,
+      active.pendingParent,
+    );
+    this.store.updateAfterRestack(active.branch, active.newBase, branchHead, active.pendingParent);
+    this.commitMetadataExpectation(state);
+    this.output.line(
+      external
+        ? `Recorded rebase completed with Git for ${active.branch}.`
+        : `Resolved rebase conflict for ${active.branch}.`,
+    );
+    delete state.active;
+    this.writeState(state);
+  }
+
+  private async resumeQueue(state: OperationState): Promise<void> {
+    try {
+      await this.continueQueue(state, { command: state.command, haltOnConflict: true });
+      this.finishState(state);
+    } catch (error) {
+      if (error instanceof ConflictHalt) throw error;
+      this.rollback(state);
       throw error;
     }
   }
@@ -786,7 +820,9 @@ export class RestackEngine {
       return false;
     }
     const action = this.git.capture(['reflog', 'show', '-1', '--format=%gs', branch]);
-    return action.startsWith('rebase (finish):');
+    if (!action.startsWith('rebase (finish):')) return false;
+    const previous = this.git.run(['rev-parse', `${branch}@{1}`], { allowFailure: true });
+    return previous.status === 0 && previous.stdout.trim() === active.oldHead;
   }
 
   private unmergedFiles(): string[] {
@@ -809,7 +845,8 @@ export class RestackEngine {
       '',
       '1. Resolve the conflicts listed above.',
       '2. Stage the resolved files with git add, or run gg continue --all.',
-      '3. Run gg continue.',
+      '3. Run gg continue or git rebase --continue.',
+      '4. If Git finishes the rebase, your next stack-changing gg command will resume the saved operation.',
       '',
       "It's safe to cancel the ongoing rebase with gg abort.",
     ]

@@ -64,7 +64,7 @@ gg continue [-a|--all]
 gg abort [-f|--force]
 ```
 
-The default restacks the current branch's full connected stack segment. A conflict leaves a normal Git rebase in progress and prints resolution instructions.
+The default restacks the current branch's full connected stack segment. A conflict leaves a normal Git rebase in progress and prints resolution instructions. You can finish it with `gg continue` or `git rebase --continue`. After Git finishes the rebase directly, the next stack-changing `gg` command reconciles gg's metadata and resumes the saved queue before performing the new command.
 
 ## Move
 
